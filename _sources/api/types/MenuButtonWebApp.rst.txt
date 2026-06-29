@@ -1,0 +1,4 @@
+MenuButtonWebApp
+================
+
+.. autoclass:: pyrogram.types.MenuButtonWebApp()

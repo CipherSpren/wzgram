@@ -1,0 +1,4 @@
+Poll
+====
+
+.. autoclass:: pyrogram.types.Poll()

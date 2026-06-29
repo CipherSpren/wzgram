@@ -1,0 +1,4 @@
+InlineQuery
+===========
+
+.. autoclass:: pyrogram.types.InlineQuery()

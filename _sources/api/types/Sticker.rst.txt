@@ -1,0 +1,4 @@
+Sticker
+=======
+
+.. autoclass:: pyrogram.types.Sticker()

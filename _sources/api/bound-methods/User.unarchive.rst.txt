@@ -1,0 +1,4 @@
+User.unarchive()
+================
+
+.. automethod:: pyrogram.types.User.unarchive()

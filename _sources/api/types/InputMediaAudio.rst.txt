@@ -1,0 +1,4 @@
+InputMediaAudio
+===============
+
+.. autoclass:: pyrogram.types.InputMediaAudio()

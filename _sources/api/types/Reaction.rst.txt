@@ -1,0 +1,4 @@
+Reaction
+========
+
+.. autoclass:: pyrogram.types.Reaction()

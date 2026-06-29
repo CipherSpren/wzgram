@@ -1,0 +1,4 @@
+Document
+========
+
+.. autoclass:: pyrogram.types.Document()

@@ -1,0 +1,4 @@
+InlineQueryResultLocation
+=========================
+
+.. autoclass:: pyrogram.types.InlineQueryResultLocation()

@@ -1,0 +1,4 @@
+InlineQueryResultAnimation
+==========================
+
+.. autoclass:: pyrogram.types.InlineQueryResultAnimation()

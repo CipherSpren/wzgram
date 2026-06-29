@@ -1,0 +1,4 @@
+BotCommandScopeAllChatAdministrators
+====================================
+
+.. autoclass:: pyrogram.types.BotCommandScopeAllChatAdministrators()

@@ -1,0 +1,4 @@
+ChatEvent
+=========
+
+.. autoclass:: pyrogram.types.ChatEvent()

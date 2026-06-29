@@ -1,0 +1,4 @@
+InlineQueryResultCachedVideo
+============================
+
+.. autoclass:: pyrogram.types.InlineQueryResultCachedVideo()

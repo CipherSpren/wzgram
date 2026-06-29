@@ -1,0 +1,4 @@
+InputMediaPhoto
+===============
+
+.. autoclass:: pyrogram.types.InputMediaPhoto()

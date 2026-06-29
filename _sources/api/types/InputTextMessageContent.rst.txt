@@ -1,0 +1,4 @@
+InputTextMessageContent
+=======================
+
+.. autoclass:: pyrogram.types.InputTextMessageContent()

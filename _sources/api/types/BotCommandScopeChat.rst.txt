@@ -1,0 +1,4 @@
+BotCommandScopeChat
+===================
+
+.. autoclass:: pyrogram.types.BotCommandScopeChat()

@@ -1,0 +1,4 @@
+ChosenInlineResult
+==================
+
+.. autoclass:: pyrogram.types.ChosenInlineResult()

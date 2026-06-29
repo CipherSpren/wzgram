@@ -1,0 +1,4 @@
+BotCommandScope
+===============
+
+.. autoclass:: pyrogram.types.BotCommandScope()

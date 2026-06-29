@@ -1,0 +1,4 @@
+InlineQueryResultCachedPhoto
+============================
+
+.. autoclass:: pyrogram.types.InlineQueryResultCachedPhoto()

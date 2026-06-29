@@ -1,0 +1,4 @@
+ChatJoinRequest
+===============
+
+.. autoclass:: pyrogram.types.ChatJoinRequest()

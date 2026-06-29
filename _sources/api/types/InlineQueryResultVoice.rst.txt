@@ -1,0 +1,4 @@
+InlineQueryResultVoice
+======================
+
+.. autoclass:: pyrogram.types.InlineQueryResultVoice()

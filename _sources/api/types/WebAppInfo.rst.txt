@@ -1,0 +1,4 @@
+WebAppInfo
+==========
+
+.. autoclass:: pyrogram.types.WebAppInfo()

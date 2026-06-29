@@ -1,0 +1,4 @@
+PollOption
+==========
+
+.. autoclass:: pyrogram.types.PollOption()

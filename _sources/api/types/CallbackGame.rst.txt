@@ -1,0 +1,4 @@
+CallbackGame
+============
+
+.. autoclass:: pyrogram.types.CallbackGame()

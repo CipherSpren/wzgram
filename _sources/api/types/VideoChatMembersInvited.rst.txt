@@ -1,0 +1,4 @@
+VideoChatMembersInvited
+=======================
+
+.. autoclass:: pyrogram.types.VideoChatMembersInvited()

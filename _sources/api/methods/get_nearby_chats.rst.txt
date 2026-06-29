@@ -1,0 +1,4 @@
+get_nearby_chats()
+==================
+
+.. automethod:: pyrogram.Client.get_nearby_chats()

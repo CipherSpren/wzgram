@@ -1,0 +1,4 @@
+InlineKeyboardMarkup
+====================
+
+.. autoclass:: pyrogram.types.InlineKeyboardMarkup()

@@ -1,0 +1,4 @@
+VideoChatEnded
+==============
+
+.. autoclass:: pyrogram.types.VideoChatEnded()

@@ -1,0 +1,4 @@
+InputMediaDocument
+==================
+
+.. autoclass:: pyrogram.types.InputMediaDocument()

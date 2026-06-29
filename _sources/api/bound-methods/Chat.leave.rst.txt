@@ -1,0 +1,4 @@
+Chat.leave()
+============
+
+.. automethod:: pyrogram.types.Chat.leave()

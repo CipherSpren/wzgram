@@ -1,0 +1,4 @@
+VideoChatStarted
+================
+
+.. autoclass:: pyrogram.types.VideoChatStarted()

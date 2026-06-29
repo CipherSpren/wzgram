@@ -1,0 +1,4 @@
+Audio
+=====
+
+.. autoclass:: pyrogram.types.Audio()

@@ -1,0 +1,4 @@
+GameHighScore
+=============
+
+.. autoclass:: pyrogram.types.GameHighScore()

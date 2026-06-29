@@ -1,0 +1,4 @@
+InlineQueryResultCachedAnimation
+================================
+
+.. autoclass:: pyrogram.types.InlineQueryResultCachedAnimation()

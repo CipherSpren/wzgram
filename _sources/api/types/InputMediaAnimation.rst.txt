@@ -1,0 +1,4 @@
+InputMediaAnimation
+===================
+
+.. autoclass:: pyrogram.types.InputMediaAnimation()

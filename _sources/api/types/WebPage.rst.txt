@@ -1,0 +1,4 @@
+WebPage
+=======
+
+.. autoclass:: pyrogram.types.WebPage()

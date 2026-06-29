@@ -1,0 +1,4 @@
+Restriction
+===========
+
+.. autoclass:: pyrogram.types.Restriction()

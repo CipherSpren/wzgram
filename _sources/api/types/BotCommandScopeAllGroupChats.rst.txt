@@ -1,0 +1,4 @@
+BotCommandScopeAllGroupChats
+============================
+
+.. autoclass:: pyrogram.types.BotCommandScopeAllGroupChats()

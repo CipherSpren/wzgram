@@ -1,0 +1,4 @@
+ChatEventFilter
+===============
+
+.. autoclass:: pyrogram.types.ChatEventFilter()

@@ -1,0 +1,4 @@
+Message
+=======
+
+.. autoclass:: pyrogram.types.Message()

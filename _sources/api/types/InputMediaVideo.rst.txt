@@ -1,0 +1,4 @@
+InputMediaVideo
+===============
+
+.. autoclass:: pyrogram.types.InputMediaVideo()

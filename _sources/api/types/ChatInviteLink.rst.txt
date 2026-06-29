@@ -1,0 +1,4 @@
+ChatInviteLink
+==============
+
+.. autoclass:: pyrogram.types.ChatInviteLink()

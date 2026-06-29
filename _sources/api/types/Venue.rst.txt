@@ -1,0 +1,4 @@
+Venue
+=====
+
+.. autoclass:: pyrogram.types.Venue()

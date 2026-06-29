@@ -1,0 +1,4 @@
+Contact
+=======
+
+.. autoclass:: pyrogram.types.Contact()

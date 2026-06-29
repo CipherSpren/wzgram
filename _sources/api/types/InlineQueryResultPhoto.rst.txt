@@ -1,0 +1,4 @@
+InlineQueryResultPhoto
+======================
+
+.. autoclass:: pyrogram.types.InlineQueryResultPhoto()

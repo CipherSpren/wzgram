@@ -1,0 +1,4 @@
+ChatPhoto
+=========
+
+.. autoclass:: pyrogram.types.ChatPhoto()

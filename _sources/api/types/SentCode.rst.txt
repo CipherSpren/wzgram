@@ -1,0 +1,4 @@
+SentCode
+========
+
+.. autoclass:: pyrogram.types.SentCode()

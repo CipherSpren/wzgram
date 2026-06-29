@@ -1,0 +1,4 @@
+Game
+====
+
+.. autoclass:: pyrogram.types.Game()

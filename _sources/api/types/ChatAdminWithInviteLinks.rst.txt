@@ -1,0 +1,4 @@
+ChatAdminWithInviteLinks
+========================
+
+.. autoclass:: pyrogram.types.ChatAdminWithInviteLinks()

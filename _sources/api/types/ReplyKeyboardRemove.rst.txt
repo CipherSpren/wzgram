@@ -1,0 +1,4 @@
+ReplyKeyboardRemove
+===================
+
+.. autoclass:: pyrogram.types.ReplyKeyboardRemove()

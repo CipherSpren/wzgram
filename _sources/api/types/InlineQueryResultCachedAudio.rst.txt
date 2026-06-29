@@ -1,0 +1,4 @@
+InlineQueryResultCachedAudio
+============================
+
+.. autoclass:: pyrogram.types.InlineQueryResultCachedAudio()

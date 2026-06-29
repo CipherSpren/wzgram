@@ -1,0 +1,4 @@
+CallbackQuery
+=============
+
+.. autoclass:: pyrogram.types.CallbackQuery()

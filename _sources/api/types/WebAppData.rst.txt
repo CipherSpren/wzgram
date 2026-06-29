@@ -1,0 +1,4 @@
+WebAppData
+==========
+
+.. autoclass:: pyrogram.types.WebAppData()

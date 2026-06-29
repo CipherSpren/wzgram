@@ -1,0 +1,4 @@
+BotCommand
+==========
+
+.. autoclass:: pyrogram.types.BotCommand()

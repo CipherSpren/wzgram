@@ -1,0 +1,4 @@
+MessageEntity
+=============
+
+.. autoclass:: pyrogram.types.MessageEntity()

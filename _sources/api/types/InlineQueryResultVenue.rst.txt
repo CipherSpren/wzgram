@@ -1,0 +1,4 @@
+InlineQueryResultVenue
+======================
+
+.. autoclass:: pyrogram.types.InlineQueryResultVenue()

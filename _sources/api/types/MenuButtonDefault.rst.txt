@@ -1,0 +1,4 @@
+MenuButtonDefault
+=================
+
+.. autoclass:: pyrogram.types.MenuButtonDefault()

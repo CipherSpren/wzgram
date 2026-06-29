@@ -1,0 +1,4 @@
+VideoChatScheduled
+==================
+
+.. autoclass:: pyrogram.types.VideoChatScheduled()

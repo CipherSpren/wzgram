@@ -1,0 +1,4 @@
+InlineQueryResultContact
+========================
+
+.. autoclass:: pyrogram.types.InlineQueryResultContact()

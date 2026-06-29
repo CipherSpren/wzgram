@@ -1,0 +1,4 @@
+InlineQueryResultDocument
+=========================
+
+.. autoclass:: pyrogram.types.InlineQueryResultDocument()

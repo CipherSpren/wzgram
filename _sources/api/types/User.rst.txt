@@ -1,0 +1,4 @@
+User
+====
+
+.. autoclass:: pyrogram.types.User()

@@ -1,0 +1,4 @@
+ChatPreview
+===========
+
+.. autoclass:: pyrogram.types.ChatPreview()

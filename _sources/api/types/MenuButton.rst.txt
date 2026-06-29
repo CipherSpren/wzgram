@@ -1,0 +1,4 @@
+MenuButton
+==========
+
+.. autoclass:: pyrogram.types.MenuButton()

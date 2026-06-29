@@ -1,0 +1,4 @@
+Thumbnail
+=========
+
+.. autoclass:: pyrogram.types.Thumbnail()

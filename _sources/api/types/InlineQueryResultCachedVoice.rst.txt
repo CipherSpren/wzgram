@@ -1,0 +1,4 @@
+InlineQueryResultCachedVoice
+============================
+
+.. autoclass:: pyrogram.types.InlineQueryResultCachedVoice()

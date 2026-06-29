@@ -1,0 +1,4 @@
+Message.delete()
+================
+
+.. automethod:: pyrogram.types.Message.delete()

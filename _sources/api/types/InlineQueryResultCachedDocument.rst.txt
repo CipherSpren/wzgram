@@ -1,0 +1,4 @@
+InlineQueryResultCachedDocument
+===============================
+
+.. autoclass:: pyrogram.types.InlineQueryResultCachedDocument()

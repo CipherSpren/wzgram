@@ -1,0 +1,4 @@
+Message.unpin()
+===============
+
+.. automethod:: pyrogram.types.Message.unpin()

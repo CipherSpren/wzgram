@@ -1,0 +1,4 @@
+ChatMemberUpdated
+=================
+
+.. autoclass:: pyrogram.types.ChatMemberUpdated()

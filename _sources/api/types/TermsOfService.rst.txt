@@ -1,0 +1,4 @@
+TermsOfService
+==============
+
+.. autoclass:: pyrogram.types.TermsOfService()

@@ -1,0 +1,4 @@
+ChatReactions
+=============
+
+.. autoclass:: pyrogram.types.ChatReactions()

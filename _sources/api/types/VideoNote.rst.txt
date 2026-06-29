@@ -1,0 +1,4 @@
+VideoNote
+=========
+
+.. autoclass:: pyrogram.types.VideoNote()
