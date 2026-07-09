@@ -29,7 +29,8 @@ class SendReaction:
         message_id: int,
         emoji: str = "",
         big: bool = False,
-        add_to_recent: bool = False
+        add_to_recent: bool = False,
+        business_connection_id: Optional[str] = None,
     ) -> bool:
         """Send a reaction to a message.
 
@@ -69,7 +70,8 @@ class SendReaction:
                 reaction=[raw.types.ReactionEmoji(emoticon=emoji)] if emoji else None,
                 big=big,
                 add_to_recent=add_to_recent
-            )
+            ),
+            business_connection_id=business_connection_id
         )
 
         return True
