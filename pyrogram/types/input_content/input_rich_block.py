@@ -220,37 +220,51 @@ class InputRichBlockAnchor(InputRichBlock):
 
 
 class InputRichBlockListItem(Object):
-    """An item in a :class:`InputRichBlockList`.
+    """An item in a :class:`~pyrogram.types.InputRichBlockList`.
 
     A list item either contains a single text line or a collection of nested blocks.
 
     Parameters:
-        blocks (List of :obj:`InputRichBlock`, *optional*):
+        blocks (List of :obj:`~pyrogram.types.InputRichBlock`, *optional*):
             Nested blocks that make up the list item content.
             Mutually exclusive with *text*.
 
         text (``str`` | :obj:`~pyrogram.raw.base.RichText`, *optional*):
             Simple text content of the list item.
             Mutually exclusive with *blocks*.
+
+        has_checkbox (``bool``, *optional*):
+            Pass True if the item has a checkbox.
+
+        is_checked (``bool``, *optional*):
+            Pass True if the item has a checked checkbox.
     """
 
     def __init__(
         self,
         blocks: Optional[List[InputRichBlock]] = None,
         text: Optional[Union[str, "raw.base.RichText"]] = None,
+        has_checkbox: Optional[bool] = None,
+        is_checked: Optional[bool] = None,
     ):
         super().__init__()
 
         self.blocks = blocks
         self.text = text
+        self.has_checkbox = has_checkbox
+        self.is_checked = is_checked
 
     def write(self) -> "raw.base.PageListItem":
         if self.blocks:
             return raw.types.PageListItemBlocks(
-                blocks=[b.write() for b in self.blocks]
+                blocks=[b.write() for b in self.blocks],
+                checkbox=self.has_checkbox,
+                checked=self.is_checked
             )
         return raw.types.PageListItemText(
-            text=_to_rich_text(self.text or "")
+            text=_to_rich_text(self.text or ""),
+            checkbox=self.has_checkbox,
+            checked=self.is_checked
         )
 
 
@@ -258,7 +272,7 @@ class InputRichBlockList(InputRichBlock):
     """A list block, corresponding to the HTML tags ``<ul>`` (unordered) or ``<ol>`` (ordered).
 
     Parameters:
-        items (List of :obj:`InputRichBlockListItem`):
+        items (List of :obj:`~pyrogram.types.InputRichBlockListItem`):
             The items in the list.
 
         ordered (``bool``, *optional*):
@@ -289,7 +303,7 @@ class InputRichBlockBlockQuotation(InputRichBlock):
     """A block quotation, corresponding to the HTML tag ``<blockquote>``.
 
     Parameters:
-        blocks (List of :obj:`InputRichBlock`):
+        blocks (List of :obj:`~pyrogram.types.InputRichBlock`):
             Blocks inside the block quotation.
 
         credit (``str`` | :obj:`~pyrogram.raw.base.RichText`, *optional*):
@@ -349,9 +363,9 @@ class InputRichBlockCollage(InputRichBlock):
     Displays a set of media blocks in a grid layout.
 
     Parameters:
-        items (List of :obj:`InputRichBlock`):
-            Media blocks in the collage (typically :class:`InputRichBlockPhoto`,
-            :class:`InputRichBlockVideo`, etc.).
+        items (List of :obj:`~pyrogram.types.InputRichBlock`):
+            Media blocks in the collage (typically :class:`~pyrogram.types.InputRichBlockPhoto`,
+            :class:`~pyrogram.types.InputRichBlockVideo`, etc.).
 
         caption (``str`` | :obj:`~pyrogram.raw.base.RichText`, *optional*):
             Caption of the collage.
@@ -380,9 +394,9 @@ class InputRichBlockSlideshow(InputRichBlock):
     Displays a set of media blocks in a slideshow/carousel layout.
 
     Parameters:
-        items (List of :obj:`InputRichBlock`):
-            Media blocks in the slideshow (typically :class:`InputRichBlockPhoto`,
-            :class:`InputRichBlockVideo`, etc.).
+        items (List of :obj:`~pyrogram.types.InputRichBlock`):
+            Media blocks in the slideshow (typically :class:`~pyrogram.types.InputRichBlockPhoto`,
+            :class:`~pyrogram.types.InputRichBlockVideo`, etc.).
 
         caption (``str`` | :obj:`~pyrogram.raw.base.RichText`, *optional*):
             Caption of the slideshow.
@@ -412,7 +426,7 @@ class InputRichBlockTable(InputRichBlock):
         title (``str`` | :obj:`~pyrogram.raw.base.RichText`):
             Title of the table, corresponding to the HTML tag ``<caption>``.
 
-        rows (List of List of :obj:`InputRichBlockTableCell`):
+        rows (List of List of :obj:`~pyrogram.types.InputRichBlockTableCell`):
             Rows of the table. Each row is a list of cell objects.
 
         bordered (``bool``, *optional*):
@@ -451,7 +465,7 @@ class InputRichBlockTable(InputRichBlock):
 
 
 class InputRichBlockTableCell(Object):
-    """A cell in a table row (used with :class:`InputRichBlockTable`).
+    """A cell in a table row (used with :class:`~pyrogram.types.InputRichBlockTable`).
 
     Parameters:
         text (``str`` | :obj:`~pyrogram.raw.base.RichText`):
@@ -524,7 +538,7 @@ class InputRichBlockDetails(InputRichBlock):
             Summary text of the details element, corresponding to the HTML tag ``<summary>``.
             This is the visible label when the section is collapsed.
 
-        blocks (List of :obj:`InputRichBlock`):
+        blocks (List of :obj:`~pyrogram.types.InputRichBlock`):
             Blocks inside the details element (hidden until expanded).
 
         is_open (``bool``, *optional*):

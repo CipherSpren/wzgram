@@ -1,0 +1,695 @@
+# Bot API and MTProto name reconciliation.
+#
+# rename:      the spec calls it X, wzgram calls it Y
+# unsupported: the spec has it, wzgram deliberately does not, with the reason
+#
+# Lookup order is entity, then raw function (MTProto only), then "*".
+
+botapi:
+  type_rename:
+    PhotoSize: Thumbnail
+    Birthdate: Birthday
+    PaidMessagePriceChanged: PaidMessagesPriceChanged
+    ReactionType: Reaction
+    ChatFullInfo: Chat
+
+  type_unsupported:
+    Update: MTProto pushes parsed updates straight to handlers; there is no Update object
+    WebhookInfo: webhooks are a Bot API transport and do not exist over MTProto
+    MessageId: send_* return a full Message, not a bare identifier
+    InaccessibleMessage: MTProto always delivers the message itself
+    MaybeInaccessibleMessage: union of Message and InaccessibleMessage, neither modelled
+    ResponseParameters: MTProto surfaces these as typed RPCError subclasses
+    InputFile: uploads take a path or a file object directly, with no wrapper type
+
+  method_rename: {}
+
+  method_unsupported:
+    getUpdates: long polling is a Bot API transport; MTProto pushes updates
+    setWebhook: webhooks do not exist over MTProto
+    deleteWebhook: webhooks do not exist over MTProto
+    getWebhookInfo: webhooks do not exist over MTProto
+
+  field_rename:
+    "*":
+      from: from_user
+      thumbnail: thumbs
+      thumbnail_url: thumb_url
+      thumbnail_width: thumb_width
+      thumbnail_height: thumb_height
+      request_id: button_id
+      input_field_placeholder: placeholder
+      horizontal_accuracy: accuracy_radius
+    MessageEntity:
+      is_expandable: expandable
+    Message:
+      message_id: id
+      boost_added: chat_boost
+      chat_background_set: chat_set_background
+      direct_messages_topic: direct_messages_topic_id
+      gift_upgrade_sent: gift
+      is_automatic_forward: automatic_forward
+      is_from_offline: from_offline
+      message_auto_delete_timer_changed: set_message_auto_delete_time
+      paid_message_price_changed: paid_messages_price_changed
+      paid_star_count: send_paid_messages_stars
+      unique_gift: gift
+      video_chat_participants_invited: video_chat_members_invited
+    ForumTopicCreated:
+      name: title
+      icon_custom_emoji_id: custom_emoji_id
+    ForumTopicEdited:
+      name: title
+      icon_custom_emoji_id: custom_emoji_id
+    StarAmount:
+      amount: star_count
+      nanostar_amount: nanostar_count
+    Video:
+      cover: video_cover
+      start_timestamp: video_start_timestamp
+      qualities: alternative_videos
+    InputMediaVideo:
+      cover: video_cover
+      start_timestamp: video_start_timestamp
+      thumbnail: thumb
+    ChecklistTasksDone:
+      checklist_message: checklist_message_id
+    ChecklistTasksAdded:
+      checklist_message: checklist_message_id
+    RichTextDateTime:
+      unix_time: date
+    ChatJoinRequest:
+      user_chat_id: from_user
+    BusinessConnection:
+      user_chat_id: user
+    ChatShared:
+      chat_id: chat
+    InputRichBlockPhoto:
+      photo: photo_id
+    InputRichBlockVideo:
+      video: video_id
+    InputRichBlockAudio:
+      audio: audio_id
+    InputRichBlockAnimation:
+      animation: video_id
+    InputRichBlockVoiceNote:
+      voice_note: audio_id
+    InputRichBlockCollage:
+      blocks: items
+    InputRichBlockSlideshow:
+      blocks: items
+    InputRichBlockListItem:
+      value: text
+    InputRichBlockTable:
+      is_bordered: bordered
+      is_striped: striped
+      caption: title
+      cells: rows
+    InputRichBlockMap:
+      height: h
+      width: w
+      location: geo
+    Poll:
+      media: description_media
+    PollOptionAdded:
+      option_text: text
+    PollOptionDeleted:
+      option_text: text
+    Giveaway:
+      country_codes: only_for_countries
+      has_public_winners: winners_are_visible
+      only_new_members: only_new_subscribers
+      premium_subscription_month_count: months
+      prize_description: description
+      prize_star_count: stars
+      winner_count: quantity
+      winners_selection_date: until_date
+    ChatBoost:
+      add_date: date
+      boost_id: id
+      expiration_date: expire_date
+    ForumTopic:
+      icon_custom_emoji_id: icon_emoji_id
+      message_thread_id: id
+      name: title
+    DirectMessagePriceChanged:
+      are_direct_messages_enabled: is_enabled
+      direct_message_star_count: paid_message_star_count
+    DirectMessagesTopic:
+      topic_id: id
+    ChatPhoto:
+      big_file_unique_id: big_photo_unique_id
+      small_file_unique_id: small_photo_unique_id
+    Checklist:
+      title_entities: entities
+    InputChecklist:
+      title_entities: entities
+    InputChecklistTask:
+      text_entities: entities
+    ChecklistTask:
+      text_entities: entities
+    PaidMediaInfo:
+      star_count: stars_amount
+      paid_media: media
+    AcceptedGiftTypes:
+      unique_gifts: upgraded_gifts
+    BotCommand:
+      is_ephemeral: ephemeral
+    BusinessBotRights:
+      can_view_gifts_and_stars: can_view_gifts
+      can_convert_gifts_to_stars: can_sell_gifts
+    BusinessIntro:
+      message: text
+    Community:
+      name: title
+    User:
+      has_topics_enabled: has_topics
+    InputMediaDocument:
+      thumbnail: thumb
+    InputMediaAnimation:
+      thumbnail: thumb
+    InputMediaAudio:
+      thumbnail: thumb
+    ChatFullInfo:
+      active_usernames: usernames
+      birthdate: birthday
+      business_opening_hours: business_work_hours
+      has_hidden_members: is_members_hidden
+      max_reaction_count: reactions_limit
+      personal_chat: personal_channel
+
+  field_unsupported:
+    Gift:
+      total_count: carried by overall_limits, which pairs it with the remaining count
+      remaining_count: carried by overall_limits
+      personal_total_count: carried by user_limits, the per-user purchase limit
+      personal_remaining_count: carried by user_limits
+    Game:
+      text: >-
+        the game TL constructor carries no text; Bot API takes it from the
+        message the game is attached to
+      text_entities: >-
+        the game TL constructor carries no text, so it carries no entities either
+    LivePhoto:
+      photo: >-
+        wzgram models the moving half of a live photo, which MTProto sends as a
+        document; the still frame arrives as the message's own photo
+    InputRichMessageMedia:
+      id: >-
+        wzgram takes the MTProto shape, three vectors of photos, documents and
+        users, rather than one wrapper per referenced item
+      media: >-
+        wzgram takes the MTProto shape, three vectors of photos, documents and
+        users, rather than one wrapper per referenced item
+    SuggestedPostPrice:
+      amount: >-
+        wzgram keeps one class per currency, SuggestedPostPriceStar and
+        SuggestedPostPriceTon, each with its own amount
+      currency: implied by the class, SuggestedPostPriceStar or SuggestedPostPriceTon
+    ChatBoost:
+      source: >-
+        the boost origin is flattened into is_gift, is_giveaway and from_user
+    SuggestedPostPaid:
+      currency: >-
+        implied by which amount is set, star_amount for Stars and amount for TON
+    ChecklistTask:
+      completed_by_chat: completed_by carries whoever completed the task
+      completed_by_user: completed_by carries whoever completed the task
+    Venue:
+      google_place_id: >-
+        MTProto keeps one provider-agnostic venue id, surfaced as foursquare_id
+      google_place_type: >-
+        MTProto keeps one provider-agnostic venue type, surfaced as foursquare_type
+    Poll:
+      question_entities: carried by question, which is a FormattedText and holds the entities
+      description_entities: carried by description, which is a FormattedText and holds the entities
+      explanation_entities: carried by explanation, which is a FormattedText and holds the entities
+    PollOption:
+      text_entities: carried by text, which is a FormattedText and holds the entities
+    InputPollOption:
+      text_entities: carried by text, which is a FormattedText and holds the entities
+      text_parse_mode: text accepts a FormattedText, which carries the parse mode
+    PollOptionAdded:
+      option_text_entities: carried by text, which is a FormattedText and holds the entities
+    PollOptionDeleted:
+      option_text_entities: carried by text, which is a FormattedText and holds the entities
+    InputMediaPhoto:
+      show_caption_above_media: >-
+        inputSingleMedia has no invert_media flag, so MTProto places the caption
+        per message rather than per album item; send_media_group takes it
+    InputMediaVideo:
+      show_caption_above_media: >-
+        inputSingleMedia has no invert_media flag; send_media_group takes it
+    InputMediaAnimation:
+      show_caption_above_media: >-
+        inputSingleMedia has no invert_media flag; send_media_group takes it
+    ChatShared:
+      photo: carried by chat
+      title: carried by chat
+      username: carried by chat
+    ForceReply:
+      force_reply: the class itself is the marker, so there is nothing to carry
+    ReplyKeyboardRemove:
+      remove_keyboard: the class itself is the marker, so there is nothing to carry
+    ReplyParameters:
+      allow_sending_without_reply: >-
+        MTProto always sends when the replied-to message is gone, so there is
+        nothing to opt into
+    User:
+      supports_inline_queries: >-
+        inline_query_placeholder is set only for bots that accept inline queries
+    Message:
+      passport_data: Telegram Passport is not implemented; no SecureValue type exists
+    ChatFullInfo:
+      accent_color_id: carried by reply_color, which pairs it with its background emoji
+      background_custom_emoji_id: carried by reply_color
+      profile_accent_color_id: carried by profile_color
+      profile_background_custom_emoji_id: carried by profile_color
+      emoji_status_custom_emoji_id: carried by emoji_status
+      emoji_status_expiration_date: carried by emoji_status
+      has_private_forwards: private_forward_name carries the name, and its presence implies this
+      has_restricted_voice_and_video_messages: can_send_voice_messages is the same flag, inverted
+      unique_gift_colors: no MTProto equivalent; the TL schema has no gift colour scheme
+    "*":
+      type: >-
+        Bot API discriminates union members with a type string; wzgram uses a
+        distinct class per member, or an enum, so there is nothing to carry
+
+  method_field_rename:
+    "*":
+      message_effect_id: effect_id
+      rich_message: rich_text
+      thumbnail: thumb
+    sendDocument:
+      disable_content_type_detection: force_document
+    sendVideo:
+      cover: video_cover
+      start_timestamp: video_start_timestamp
+    sendPaidMedia:
+      star_count: stars_amount
+    sendPoll:
+      media: description_media
+    sendGift:
+      user_id: chat_id
+      text_entities: entities
+      text_parse_mode: parse_mode
+    deleteEphemeralMessage:
+      ephemeral_message_id: message_id
+    getChatGifts:
+      exclude_unique: exclude_upgraded
+      exclude_limited_upgradable: exclude_upgradable
+      exclude_limited_non_upgradable: exclude_non_upgradable
+      exclude_from_blockchain: exclude_hosted
+    getBusinessAccountGifts:
+      exclude_unique: exclude_upgraded
+      exclude_limited_upgradable: exclude_upgradable
+      exclude_limited_non_upgradable: exclude_non_upgradable
+      exclude_from_blockchain: exclude_hosted
+    createForumTopic:
+      name: title
+      icon_custom_emoji_id: icon_emoji_id
+    editForumTopic:
+      name: title
+      icon_custom_emoji_id: icon_emoji_id
+      message_thread_id: topic_id
+    closeForumTopic:
+      message_thread_id: topic_id
+    deleteForumTopic:
+      message_thread_id: topic_id
+    reopenForumTopic:
+      message_thread_id: topic_id
+    unpinAllForumTopicMessages:
+      message_thread_id: topic_id
+    sendChatAction:
+      message_thread_id: top_msg_id
+    answerInlineQuery:
+      button: switch_webview_text
+
+  method_field_unsupported:
+    editMessageText:
+      inline_message_id: editing a message sent as an inline query result goes through edit_inline_text, which takes the inline_message_id
+    editMessageCaption:
+      inline_message_id: editing a message sent as an inline query result goes through edit_inline_caption, which takes the inline_message_id
+    editMessageMedia:
+      inline_message_id: editing a message sent as an inline query result goes through edit_inline_media, which takes the inline_message_id
+    editMessageReplyMarkup:
+      inline_message_id: editing a message sent as an inline query result goes through edit_inline_reply_markup, which takes the inline_message_id
+    unbanChatMember:
+      only_if_banned: >-
+        channels.editBanned has no such flag; MTProto clears the restrictions
+        whether or not the user was banned
+    transferGift:
+      star_count: >-
+        payments.transferStarGift takes no fee argument; the cost is fixed by the
+        gift itself
+    sendSticker:
+      emoji: >-
+        the emoji lives on the sticker document, so it cannot be overridden per
+        send
+    sendPoll:
+      question_entities: carried by question, which accepts a FormattedText holding the entities and parse mode
+      question_parse_mode: carried by question, which accepts a FormattedText holding the entities and parse mode
+      description_entities: carried by description, which accepts a FormattedText holding the entities and parse mode
+      description_parse_mode: carried by description, which accepts a FormattedText holding the entities and parse mode
+    sendVenue:
+      google_place_id: >-
+        MTProto keeps one provider-agnostic venue id, sent as foursquare_id
+      google_place_type: >-
+        MTProto keeps one provider-agnostic venue type, sent as foursquare_type
+    restrictChatMember:
+      use_independent_chat_permissions: >-
+        chatBannedRights has no grouping flag, so every permission is always
+        independent
+    "*":
+      receiver_user_id: >-
+        no TL field at layer 228; sending on another user's behalf is a Bot API
+        only concept
+      callback_query_id: >-
+        no TL field at layer 228; answering a callback query with a new message
+        is a Bot API only concept
+    setChatPermissions:
+      use_independent_chat_permissions: >-
+        chatBannedRights has no grouping flag, so every permission is always
+        independent
+    promoteChatMember:
+      is_anonymous: folded into the privileges argument
+      can_manage_chat: folded into the privileges argument
+      can_delete_messages: folded into the privileges argument
+      can_manage_video_chats: folded into the privileges argument
+      can_restrict_members: folded into the privileges argument
+      can_promote_members: folded into the privileges argument
+      can_change_info: folded into the privileges argument
+      can_invite_users: folded into the privileges argument
+      can_post_messages: folded into the privileges argument
+      can_edit_messages: folded into the privileges argument
+      can_pin_messages: folded into the privileges argument
+      can_post_stories: folded into the privileges argument
+      can_edit_stories: folded into the privileges argument
+      can_delete_stories: folded into the privileges argument
+      can_manage_topics: folded into the privileges argument
+      can_manage_direct_messages: folded into the privileges argument
+      can_manage_tags: folded into the privileges argument
+
+  enum_value_rename:
+    ChatType:
+      sender: BOT
+
+  enum_value_unsupported:
+    MessageEntityType:
+      expandable_blockquote: >-
+        wzgram keeps one BLOCKQUOTE member and an expandable flag on the entity
+
+  enum_skip:
+    sendGift:
+      text_parse_mode: >-
+        the quoted values in this description are the entity types the text may
+        contain, not the parse modes the field accepts
+
+mtproto:
+  internal:
+    - flags
+    - flags2
+    - random_id
+    - hash
+
+  raw_function: {}
+
+  field_rename:
+    "*":
+      peer: chat_id
+      message: text
+      silent: disable_notification
+      no_webpage: disable_web_page_preview
+      noforwards: protect_content
+      invert_media: show_caption_above_media
+      allow_paid_floodskip: allow_paid_broadcast
+      reply_to: reply_parameters
+      reply_to_msg_id: reply_to_message_id
+      top_msg_id: message_thread_id
+      effect: effect_id
+      allow_paid_stars: paid_message_star_count
+      schedule_repeat_period: repeat_period
+      suggested_post: suggested_post_parameters
+
+
+    approve_suggested_post:
+      msg_id: message_id
+      schedule_date: send_date
+    decline_suggested_post:
+      msg_id: message_id
+      reject_comment: comment
+    pin_chat_message:
+      id: message_id
+      pm_oneside: both_sides
+    unpin_chat_message:
+      id: message_id
+      pm_oneside: both_sides
+    unban_chat_member:
+      channel: chat_id
+      participant: user_id
+    restrict_chat_member:
+      channel: chat_id
+      participant: user_id
+      banned_rights: permissions
+    answer_pre_checkout_query:
+      query_id: pre_checkout_query_id
+      error: error_message
+      success: ok
+    answer_shipping_query:
+      query_id: shipping_query_id
+      error: error_message
+      success: ok
+    answer_inline_query:
+      query_id: inline_query_id
+      gallery: is_gallery
+      private: is_personal
+      switch_pm: switch_pm_text
+      switch_webview: switch_webview_text
+    set_chat_menu_button:
+      button: menu_button
+      user_id: chat_id
+    set_managed_bot_access_settings:
+      bot: user_id
+      add_users: added_user_ids
+      restricted: is_access_restricted
+    get_chat_gifts:
+      exclude_unupgradable: exclude_non_upgradable
+      sort_by_value: sort_by_price
+      peer_color_available: exclude_without_colors
+      exclude_unique: exclude_upgraded
+    get_business_account_gifts:
+      exclude_unupgradable: exclude_non_upgradable
+      sort_by_value: sort_by_price
+      peer_color_available: exclude_without_colors
+      exclude_unique: exclude_upgraded
+
+    messages.sendMedia:
+      message: caption
+      entities: caption_entities
+
+    messages.sendMultiMedia:
+      message: caption
+      entities: caption_entities
+
+    messages.editMessage:
+      id: message_id
+      quick_reply_shortcut_id: quick_reply_shortcut
+
+    messages.exportChatInvite:
+      title: name
+      usage_limit: member_limit
+      request_needed: creates_join_request
+
+    messages.editExportedChatInvite:
+      link: invite_link
+      title: name
+      usage_limit: member_limit
+      request_needed: creates_join_request
+
+    messages.forwardMessages:
+      from_peer: from_chat_id
+      to_peer: chat_id
+      id: message_ids
+      drop_author: hide_sender_name
+      drop_media_captions: hide_captions
+      video_timestamp: video_start_timestamp
+
+    get_business_connection:
+      connection_id: business_connection_id
+    get_custom_emoji_stickers:
+      document_id: custom_emoji_ids
+    refund_star_payment:
+      charge_id: telegram_payment_charge_id
+    set_chat_description:
+      about: description
+    answer_web_app_query:
+      bot_query_id: web_app_query_id
+    answer_guest_query:
+      query_id: guest_query_id
+    answer_chat_join_request_query:
+      query_id: chat_join_request_query_id
+    send_invoice:
+      effect: message_effect_id
+    create_chat_invite_link:
+      subscription_pricing: subscription_period
+    export_chat_invite_link:
+      subscription_pricing: subscription_period
+    edit_user_star_subscription:
+      restore: is_canceled
+      charge_id: telegram_payment_charge_id
+    send_message:
+      rich_message: rich_text
+    send_chat_join_request_web_app:
+      query_id: chat_join_request_query_id
+      result: web_app_url
+    delete_forum_topic:
+      top_msg_id: topic_id
+    delete_message_reaction:
+      msg_id: message_id
+      participant: user_id
+    delete_all_message_reactions:
+      participant: user_id
+    answer_callback_query:
+      query_id: callback_query_id
+      alert: show_alert
+    delete_business_messages:
+      id: message_ids
+    delete_ephemeral_message:
+      id: message_id
+    get_managed_bot_token:
+      bot: user_id
+    replace_managed_bot_token:
+      bot: user_id
+    get_managed_bot_access_settings:
+      bot: user_id
+    set_chat_permissions:
+      banned_rights: permissions
+
+  field_unsupported:
+    create_forum_topic:
+      title_missing: the method always sends a title, so it never marks one absent
+    get_me:
+      id: the method exists to fetch the current user, so it passes InputUserSelf
+    approve_chat_join_request:
+      approved: the method exists to approve, so it sets this itself
+    decline_chat_join_request:
+      approved: the method exists to decline, so it sets this itself
+    delete_business_messages:
+      revoke: business messages are always deleted for everyone
+    get_managed_bot_token:
+      revoke: replacing a token goes through replace_managed_bot_token
+    replace_managed_bot_token:
+      revoke: the method exists to replace the token, so it sets this itself
+    convert_gift_to_stars:
+      stargift: built from business_connection_id and owned_gift_id
+    create_invoice_link:
+      invoice_media: built from the invoice arguments
+    send_rich_message_draft:
+      action: the method exists to save a draft, so it sets this itself
+    export_chat_invite_link:
+      legacy_revoke_permanent: >-
+        replacing the primary link is what the method does, so it is always set
+      title: creating a named link goes through create_chat_invite_link
+      usage_limit: creating a limited link goes through create_chat_invite_link
+      request_needed: creating an approval link goes through create_chat_invite_link
+      expire_date: creating an expiring link goes through create_chat_invite_link
+    create_chat_invite_link:
+      legacy_revoke_permanent: a newly created link never replaces the primary one
+    get_business_account_star_balance:
+      peer: resolved from business_connection_id
+      ton: the TON balance is read with get_business_account_ton_balance
+    get_business_account_gifts:
+      peer: resolved from business_connection_id
+    close_forum_topic:
+      closed: the method exists to close the topic, so it sets this itself
+      hidden: hiding a topic goes through edit_forum_topic
+      icon_emoji_id: changing the icon goes through edit_forum_topic
+      title: renaming goes through edit_forum_topic
+    approve_suggested_post:
+      reject: the method exists to approve, so it never rejects
+      reject_comment: only a rejection carries a comment
+    decline_suggested_post:
+      reject: the method exists to decline, so it sets this itself
+      schedule_date: only an approval can move the publication date
+    pin_chat_message:
+      unpin: the method exists to pin, so it sets this itself
+    unpin_chat_message:
+      unpin: the method exists to unpin, so it sets this itself
+    unban_chat_member:
+      banned_rights: unbanning clears every restriction, so there is nothing to pass
+    answer_inline_query:
+      private: the caller sets is_personal
+    answer_pre_checkout_query:
+      success: derived from whether error_message was given
+    answer_shipping_query:
+      success: derived from whether error_message was given
+    revoke_chat_invite_link:
+      title: revoking does not edit the link; use edit_chat_invite_link
+      usage_limit: revoking does not edit the link; use edit_chat_invite_link
+      request_needed: revoking does not edit the link; use edit_chat_invite_link
+      expire_date: revoking does not edit the link; use edit_chat_invite_link
+      revoked: set by the method, which exists to revoke
+    edit_chat_invite_link:
+      revoked: revoking goes through revoke_chat_invite_link
+    send_rich_message:
+      message: the message is passed as rich_text
+      entities: the message is passed as rich_text
+      rich_message: the message is passed as rich_text
+    send_checklist:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+    send_contact:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+    send_dice:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+    send_location:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+    send_poll:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+    send_sticker:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+    send_venue:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+    send_video_note:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+    send_game:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+      invert_media: the method sends no caption, so there is nothing to place above the media
+    send_invoice:
+      invert_media: the method sends no caption, so there is nothing to place above the media
+    edit_message_text:
+      media: edits the text; media is replaced through edit_message_media
+      rich_message: rich text is passed as rich_text
+    edit_message_reply_markup:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+      media: the method builds its own content from its arguments
+      rich_message: the method builds its own content from its arguments
+      no_webpage: the method builds its own content from its arguments
+      invert_media: the method builds its own content from its arguments
+    stop_poll:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+      media: the method builds its own content from its arguments
+      rich_message: the method builds its own content from its arguments
+      no_webpage: the method builds its own content from its arguments
+      invert_media: the method builds its own content from its arguments
+    edit_message_checklist:
+      message: the method builds its own content from its arguments
+      entities: the method builds its own content from its arguments
+      media: the method builds its own content from its arguments
+      rich_message: the method builds its own content from its arguments
+      no_webpage: the method builds its own content from its arguments
+      invert_media: the method builds its own content from its arguments
+    messages.sendMedia:
+      media: the sending method builds the media from its own arguments
+    messages.sendMultiMedia:
+      multi_media: the sending method builds the media from its own arguments

@@ -39,6 +39,8 @@ class Terminate:
         if not self.is_initialized:
             raise ConnectionError("Client is already terminated")
 
+        await self.listeners.close()
+
         if self.takeout_id:
             await self.invoke(raw.functions.account.FinishTakeoutSession())
             log.info("Takeout session %s finished", self.takeout_id)
@@ -46,26 +48,41 @@ class Terminate:
         await self.storage.save()
         await self.dispatcher.stop()
 
-        for media_session in list(self.media_sessions.values()):
+        self.media_pool_reaper_event.set()
+
+        if self.media_pool_reaper_task is not None:
             try:
-                await media_session.stop()
+                await self.media_pool_reaper_task
             except Exception:
-                log.exception("Error stopping media session")
+                log.exception("Error stopping media pool reaper")
 
-        for pool in list(self.media_session_pools.values()):
-            for session in list(pool):
-                try:
-                    await session.stop()
-                except Exception:
-                    log.exception("Error stopping media session pool session")
+            self.media_pool_reaper_task = None
 
+        self.media_pool_reaper_event.clear()
+
+        for session in [
+            *self.sessions.values(),
+            *self.media_sessions.values(),
+            *(s for pool in self.media_session_pools.values() for s in pool),
+        ]:
+            try:
+                await session.stop()
+            except Exception:
+                log.exception("Error stopping session")
+
+        self.sessions.clear()
         self.media_sessions.clear()
         self.media_session_pools.clear()
 
         self.updates_watchdog_event.set()
 
         if self.updates_watchdog_task is not None:
-            await self.updates_watchdog_task
+            try:
+                await self.updates_watchdog_task
+            except Exception:
+                log.exception("Error stopping updates watchdog")
+
+            self.updates_watchdog_task = None
 
         self.updates_watchdog_event.clear()
 
@@ -73,6 +90,3 @@ class Terminate:
 
         if self.rate_limiter is not None:
             await self.rate_limiter.close()
-
-        if self.executor is not None:
-            self.executor.shutdown(wait=False)

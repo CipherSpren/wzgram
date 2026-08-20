@@ -31,7 +31,7 @@ METHODS_DIR = Path("pyrogram/methods")
 
 COMBINATOR_RE = re.compile(r"^([\w.]+)#([0-9a-f]+)\s(.*?)=\s([\w<>.]+);$", re.MULTILINE)
 FLAGS_RE = re.compile(r"flags(\d?)\.(\d+)\?")
-PARAM_RE = re.compile(r"([a-z_]+):([\w<>.]+)")
+PARAM_RE = re.compile(r"([a-z_]+):([\w<>.]+\?)?([\w<>.]+)")
 
 
 def parse_tl_functions(tl_path: Path) -> Dict[str, Dict]:
@@ -46,17 +46,12 @@ def parse_tl_functions(tl_path: Path) -> Dict[str, Dict]:
         args_str = args_str.strip()
 
         for p_match in PARAM_RE.finditer(args_str):
-            name, ptype = p_match.groups()
-            flag_match = FLAGS_RE.match(ptype)
-            if flag_match:
-                actual_type = ptype.split("?", 1)[1]
-            else:
-                actual_type = ptype
+            name, flag, actual_type = p_match.groups()
             params.append(
                 {
                     "name": name,
                     "type": actual_type,
-                    "tl_type": ptype,
+                    "tl_type": (flag or "") + actual_type,
                 }
             )
 
@@ -87,6 +82,13 @@ def to_snake_case(name: str) -> str:
 
 def to_pascal_case(name: str) -> str:
     return "".join(word.capitalize() for word in name.split("_"))
+
+
+def to_raw_reference(raw_func: str) -> str:
+    namespace, _, name = raw_func.rpartition(".")
+    name = name[:1].upper() + name[1:]
+
+    return f"{namespace}.{name}" if namespace else name
 
 
 def find_method_name(raw_name: str) -> str:
@@ -204,6 +206,11 @@ def map_raw_params(method_name: str, tl_params: List[Dict], override: Dict) -> s
         else:
             if mapped_name in extra_names:
                 lines.append(f"{name}={mapped_name},")
+            elif "?" not in p["tl_type"]:
+                print(
+                    f"  WARNING: {method_name} drops required TL param "
+                    f"{name!r} ({tl_type}); add it to extra_params or param_mapping"
+                )
 
     if override.get("supports_caption"):
         text_params_comment = (
@@ -313,7 +320,7 @@ class MethodGenerator:
                 "doc_summary": override.get("doc_summary", f"{class_name}."),
                 "response_pattern": override.get("response_pattern", "updates"),
                 "has_text_parsing": override.get("has_text_parsing", False),
-                "raw_function": raw_func,
+                "raw_function": to_raw_reference(raw_func),
                 "additional_params": build_signature_params(override),
                 "raw_params": INDENT + ("\n" + INDENT).join(raw_params_str.split("\n"))
                 if raw_params_str

@@ -25,6 +25,17 @@ class SendRichMessage:
         ]] = None,
         message_thread_id: Optional[int] = None,
         schedule_date: Optional[datetime] = None,
+        background: Optional[bool] = None,
+        clear_draft: Optional[bool] = None,
+        update_stickersets_order: Optional[bool] = None,
+        send_as: Optional[Union[int, str]] = None,
+        quick_reply_shortcut: Optional[int] = None,
+        repeat_period: Optional[int] = None,
+        allow_paid_broadcast: Optional[bool] = None,
+        paid_message_star_count: Optional[int] = None,
+        direct_messages_topic_id: Optional[int] = None,
+        suggested_post_parameters: Optional["types.SuggestedPostParameters"] = None,
+        show_caption_above_media: Optional[bool] = None,
         business_connection_id: Optional[str] = None,
     ) -> "types.Message":
         """Send a rich formatted message.
@@ -70,6 +81,39 @@ class SendRichMessage:
             business_connection_id (``str``, *optional*):
                 Unique identifier of the business connection.
 
+            background (``bool``, *optional*):
+                Send the message in background.
+
+            clear_draft (``bool``, *optional*):
+                Clear the draft of the chat.
+
+            update_stickersets_order (``bool``, *optional*):
+                Move the sticker set to the top of the list.
+
+            send_as (``int`` | ``str``, *optional*):
+                Unique identifier (int) or username (str) of the chat or channel to send the message as.
+
+            quick_reply_shortcut (``int``, *optional*):
+                Unique identifier of the quick reply shortcut to use.
+
+            repeat_period (``int``, *optional*):
+                Period in seconds for the message to be sent repeatedly.
+
+            allow_paid_broadcast (``bool``, *optional*):
+                Pay to skip the broadcast flood limit.
+
+            paid_message_star_count (``int``, *optional*):
+                The number of Telegram Stars the user agreed to pay to send the message.
+
+            direct_messages_topic_id (``int``, *optional*):
+                Unique identifier of the direct messages topic.
+
+            suggested_post_parameters (:obj:`~pyrogram.types.SuggestedPostParameters`, *optional*):
+                Parameters of the suggested post.
+
+            show_caption_above_media (``bool``, *optional*):
+                Pass True, if the caption must be shown above the message media.
+
         Returns:
             :obj:`~pyrogram.types.Message`: On success, the sent rich message is returned.
 
@@ -79,15 +123,15 @@ class SendRichMessage:
                 # Send a rich formatted message
                 await app.send_rich_message(chat_id, "<b>Hello</b> <i>world</i>!")
         """
-        if parse_mode == enums.ParseMode.HTML or parse_mode is None:
-            rich_message = raw.types.InputRichMessageHTML(
-                html=rich_text,
-                noautolink=disable_web_page_preview if disable_web_page_preview is not None else None,
-            )
-        else:
+        parse_mode = parse_mode or self.parse_mode
+
+        if parse_mode == enums.ParseMode.MARKDOWN:
             rich_message = raw.types.InputRichMessageMarkdown(
                 markdown=rich_text,
-                noautolink=disable_web_page_preview if disable_web_page_preview is not None else None,
+            )
+        else:
+            rich_message = raw.types.InputRichMessageHTML(
+                html=rich_text,
             )
 
         r = await self.invoke(
@@ -95,6 +139,7 @@ class SendRichMessage:
                 peer=await self.resolve_peer(chat_id),
                 message="",
                 random_id=self.rnd_id(),
+                no_webpage=disable_web_page_preview if disable_web_page_preview is not None else None,
                 silent=disable_notification if disable_notification is not None else None,
                 noforwards=protect_content,
                 effect=effect_id,
@@ -102,10 +147,21 @@ class SendRichMessage:
                     self,
                     reply_parameters,
                     message_thread_id,
+                    direct_messages_topic_id=direct_messages_topic_id
                 ),
                 reply_markup=await reply_markup.write(self) if reply_markup else None,
                 schedule_date=utils.datetime_to_timestamp(schedule_date),
                 rich_message=rich_message,
+                background=background,
+                clear_draft=clear_draft,
+                update_stickersets_order=update_stickersets_order,
+                send_as=await self.resolve_peer(send_as) if send_as is not None else None,
+                quick_reply_shortcut=raw.types.InputQuickReplyShortcutId(shortcut_id=quick_reply_shortcut) if quick_reply_shortcut is not None else None,
+                schedule_repeat_period=repeat_period,
+                allow_paid_floodskip=allow_paid_broadcast,
+                allow_paid_stars=paid_message_star_count if paid_message_star_count is not None else None,
+                suggested_post=suggested_post_parameters.write() if suggested_post_parameters else None,
+                invert_media=show_caption_above_media,
             ),
             sleep_threshold=60,
             business_connection_id=business_connection_id,

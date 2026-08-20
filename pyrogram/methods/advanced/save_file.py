@@ -32,14 +32,47 @@ import pyrogram
 from pyrogram import StopTransmission
 from pyrogram import raw
 from pyrogram.errors import RPCError
+from pyrogram.session import Session
 
 log = logging.getLogger(__name__)
 
 PART_SIZE = 512 * 1024
 POOL_SIZE = 20
 MAX_RETRIES = 16
+STALL_TIMEOUT = 900
 READ_BUFFER = 4 * 1024 * 1024
+MAX_BATCH = 4 * 1024 * 1024
 PROGRESS_INTERVAL = 0.2
+
+
+async def _stop_workers(queue: asyncio.Queue, workers: list) -> list:
+    """Retire the upload workers and collect what they ended with.
+
+    The sentinels are what the workers exit on, so the happy path must deliver
+    one to each. But ``queue`` is bounded by the worker count, so once the
+    workers are gone there is nobody to make room and an unconditional ``put``
+    waits for a consumer that will never run - with ``save_file_semaphore``
+    still held, which wedges every other upload on the client.
+    """
+    delivered = 0
+
+    for _ in workers:
+        if all(t.done() for t in workers):
+            break
+
+        try:
+            await asyncio.wait_for(queue.put(None), Session.MEDIA_WAIT_TIMEOUT)
+        except asyncio.TimeoutError:
+            break
+
+        delivered += 1
+
+    if delivered < len(workers):
+        for t in workers:
+            if not t.done():
+                t.cancel()
+
+    return await asyncio.gather(*workers, return_exceptions=True)
 
 
 class SaveFile:
@@ -79,6 +112,8 @@ class SaveFile:
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        from pyrogram.client import ReadAhead
+
         async with self.save_file_semaphore:
             if path is None:
                 return None
@@ -90,38 +125,46 @@ class SaveFile:
                     if data is None:
                         return
 
-                    for attempt in range(MAX_RETRIES):
-                        try:
-                            await session.invoke(data)
-                            break
-                        except StopTransmission:
-                            raise
-                        except (OSError, TimeoutError, RPCError, asyncio.TimeoutError) as e:
-                            if attempt == MAX_RETRIES - 1:
-                                log.exception(
-                                    "Upload part failed after %d attempts",
-                                    MAX_RETRIES,
-                                )
-                                raise
-                            delay = min(2 ** attempt, 30)
-                            err_str = str(e)
-                            if "FLOOD_WAIT" in err_str or "FLOOD" in err_str:
-                                for part in err_str.split():
-                                    if part.isdigit():
-                                        delay = min(int(part), 30)
-                                        break
-                            log.warning(
-                                "Retrying upload part (attempt %d/%d): %s",
-                                attempt + 1, MAX_RETRIES, err_str[:120],
+                    try:
+                        await _send_part(session, data)
+                    finally:
+                        data = None
+                        budget.release()
+
+            async def _send_part(session, data):
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        await session.invoke(
+                            data, timeout=Session.MEDIA_WAIT_TIMEOUT
+                        )
+                        break
+                    except StopTransmission:
+                        raise
+                    except (OSError, TimeoutError, RPCError, asyncio.TimeoutError) as e:
+                        if attempt == MAX_RETRIES - 1:
+                            log.exception(
+                                "Upload part failed after %d attempts",
+                                MAX_RETRIES,
                             )
-                            await asyncio.sleep(delay)
+                            raise
+                        delay = min(2 ** attempt, 30)
+                        err_str = str(e)
+                        if "FLOOD" in err_str:
+                            for part in err_str.split():
+                                if part.isdigit():
+                                    delay = min(int(part), 300)
+                                    break
+                        log.warning(
+                            "Retrying upload part (attempt %d/%d): %s",
+                            attempt + 1, MAX_RETRIES, err_str[:120],
+                        )
+                        await asyncio.sleep(delay)
 
             async def read_batch():
-                batch_size = PART_SIZE * n_workers
-                data = await self.loop.run_in_executor(
+                batch_size = min(PART_SIZE * n_workers, MAX_BATCH)
+                return await self.loop.run_in_executor(
                     self.executor, fp.read, batch_size
                 )
-                return [data[i:i+PART_SIZE] for i in range(0, len(data), PART_SIZE)]
 
             part_size = PART_SIZE
 
@@ -173,7 +216,8 @@ class SaveFile:
             pool = await self._get_media_session_pool(dc_id, pool_size)
 
             n_workers = len(pool) * 2
-            queue = asyncio.Queue(n_workers * 4)
+            queue = asyncio.Queue(n_workers)
+            budget = ReadAhead(self.read_ahead_slots)
             workers = [
                 self.loop.create_task(worker(pool[i % len(pool)]))
                 for i in range(n_workers)
@@ -220,10 +264,10 @@ class SaveFile:
                 next_batch_task = self.loop.create_task(read_batch())
 
                 while True:
-                    chunks = await next_batch_task
+                    batch = await next_batch_task
                     next_batch_task = self.loop.create_task(read_batch())
 
-                    if not chunks:
+                    if not batch:
                         next_batch_task.cancel()
                         if not is_big and not is_missing_part:
                             md5_sum = md5_sum.hexdigest()
@@ -231,14 +275,17 @@ class SaveFile:
 
                     async def _check_workers():
                         for t in workers:
-                            if t.done():
+                            # asking a cancelled task for its exception re-raises
+                            if t.done() and not t.cancelled():
                                 exc = t.exception()
-                                if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                                if exc is not None:
                                     raise exc
 
                     await _check_workers()
 
-                    for chunk in chunks:
+                    for start in range(0, len(batch), part_size):
+                        chunk = batch[start:start + part_size]
+
                         if is_big:
                             rpc = raw.functions.upload.SaveBigFilePart(
                                 file_id=file_id,
@@ -256,6 +303,8 @@ class SaveFile:
                             await asyncio.sleep(_next_dispatch - _now)
                         _next_dispatch = max(time.monotonic(), _next_dispatch) + _dispatch_interval
 
+                        await budget.acquire()
+
                         while True:
                             try:
                                 await asyncio.wait_for(queue.put(rpc), timeout=30)
@@ -263,17 +312,25 @@ class SaveFile:
                                 break
                             except asyncio.TimeoutError:
                                 await _check_workers()
+                                _now = time.monotonic()
                                 if _stalled_since == 0.0:
-                                    _stalled_since = time.monotonic()
-                                elif time.monotonic() - _stalled_since > 180:
-                                    raise TimeoutError("Upload timed out — workers may have stopped")
+                                    _stalled_since = _now
+                                    log.warning(
+                                        "Upload queue full: workers throttled (flood/connection churn), "
+                                        "waiting up to %ss",
+                                        STALL_TIMEOUT,
+                                    )
+                                elif _now - _stalled_since > STALL_TIMEOUT:
+                                    raise TimeoutError(
+                                        "Upload stalled: no part completed for "
+                                        f"{STALL_TIMEOUT}s while workers are alive "
+                                        "(flood or network throttling)"
+                                    )
                                 await asyncio.sleep(1)
 
                         if is_missing_part:
                             next_batch_task.cancel()
-                            for _ in range(n_workers):
-                                await queue.put(None)
-                            results = await asyncio.gather(*workers, return_exceptions=True)
+                            results = await _stop_workers(queue, workers)
                             for r in results:
                                 if isinstance(r, BaseException) and not isinstance(
                                     r, asyncio.CancelledError
@@ -284,8 +341,11 @@ class SaveFile:
                         if not is_big and not is_missing_part:
                             md5_sum.update(chunk)
 
+                        rpc = None
+                        chunk = None
                         file_part += 1
 
+                    batch = None
 
             except StopTransmission:
                 raise
@@ -312,10 +372,8 @@ class SaveFile:
                 if next_batch_task is not None and not next_batch_task.done():
                     next_batch_task.cancel()
 
-                for _ in workers:
-                    await queue.put(None)
-
-                await asyncio.gather(*workers, return_exceptions=True)
+                await _stop_workers(queue, workers)
+                budget.release_all()
 
                 if isinstance(path, (str, PurePath)):
                     fp.close()

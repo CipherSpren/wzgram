@@ -1,4 +1,5 @@
 import aiosqlite
+import asyncio
 import logging
 import os
 import time
@@ -9,6 +10,11 @@ from pyrogram import raw
 
 from .. import utils
 from .storage import Storage
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 log = logging.getLogger(__name__)
 
@@ -132,30 +138,38 @@ def get_input_peer(peer_id: int, access_hash: int, peer_type: str):
 
 
 def _try_lock(path: Path) -> Optional[object]:
-    try:
-        import fcntl
-        fd = os.open(path, os.O_CREAT | os.O_RDWR)
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return fd
-    except (ImportError, BlockingIOError, OSError):
+    if fcntl is None:
         return None
+
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    except OSError:
+        return None
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+
+    return fd
 
 
 def _unlock(fd: object):
     if fd is not None:
         try:
-            import fcntl
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
-        except (ImportError, OSError):
+        except OSError:
             pass
 
 
 class SQLiteStorage(Storage):
-    VERSION = 7
+    VERSION = 8
     USERNAME_TTL = 8 * 60 * 60
     FILE_EXTENSION = ".session"
     _AUTO_COMMIT_INTERVAL = 20
+    _AUTO_COMMIT_SECONDS = 5
 
     _MISSING = object()
 
@@ -178,6 +192,7 @@ class SQLiteStorage(Storage):
         self._cache: Dict[str, Any] = {}
         self._dirty: bool = False
         self._write_count: int = 0
+        self._flush_task: Optional[asyncio.Task] = None
         self._lock_fd: Optional[object] = None
 
         if self.in_memory:
@@ -191,10 +206,46 @@ class SQLiteStorage(Storage):
             self._dirty = False
 
     async def _maybe_commit(self):
+        self._dirty = True
         self._write_count += 1
+
         if self._write_count >= self._AUTO_COMMIT_INTERVAL:
             self._write_count = 0
             await self._ensure_committed()
+            return
+
+        self._schedule_flush()
+
+    def _schedule_flush(self):
+        """Bound how long a batch that never fills can stay uncommitted.
+
+        Batching by count alone leaves the last writes below the batch size in an
+        open write transaction for as long as the process runs: a kill loses them
+        - the update state among them, so gap recovery restarts from a stale pts -
+        and an open write transaction is also what stops the WAL being
+        checkpointed.
+        """
+        if self._flush_task is not None and not self._flush_task.done():
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        self._flush_task = loop.create_task(self._flush_later())
+
+    async def _flush_later(self):
+        try:
+            await asyncio.sleep(self._AUTO_COMMIT_SECONDS)
+
+            if self.conn is not None:
+                self._write_count = 0
+                await self._ensure_committed()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Deferred session commit failed")
 
     async def update(self):
         version = await self.version()
@@ -223,18 +274,22 @@ class SQLiteStorage(Storage):
             version += 1
 
         if version == 6:
-            if await self.test_mode():
-                address = TEST[await self.dc_id()]
-                port = 80
-            else:
-                address = PROD[await self.dc_id()]
-                port = 443
-
             await self.conn.execute("ALTER TABLE sessions ADD server_address TEXT;")
             await self.conn.execute("ALTER TABLE sessions ADD port INTEGER;")
-            await self.conn.execute("UPDATE sessions SET server_address = ?;", (address,))
-            await self.conn.execute("UPDATE sessions SET port = ?;", (port,))
             await self.conn.commit()
+            version += 1
+
+        if version == 7:
+            test_mode = await self.test_mode()
+            address = (TEST if test_mode else PROD).get(await self.dc_id())
+
+            if address is not None:
+                await self.conn.execute(
+                    "UPDATE sessions SET server_address = ?, port = ?;",
+                    (address, 80 if test_mode else 443)
+                )
+                await self.conn.commit()
+
             version += 1
 
         await self.version(version)
@@ -250,33 +305,36 @@ class SQLiteStorage(Storage):
         )
         await self.conn.commit()
 
+    async def load_session_string(self, session_string: str):
+        data = self._decode_session_string(session_string)
+
+        await self.dc_id(data["dc_id"])
+        await self.test_mode(data["test_mode"])
+        await self.auth_key(data["auth_key"])
+        await self.user_id(data["user_id"])
+        await self.is_bot(data["is_bot"])
+        await self.date(0)
+
+        table = TEST if data["test_mode"] else PROD
+        default_address = table.get(data["dc_id"])
+
+        if data["server_address"]:
+            await self.server_address(data["server_address"])
+            await self.port(data["port"] or (80 if data["test_mode"] else 443))
+        elif default_address is not None:
+            await self.server_address(default_address)
+            await self.port(80 if data["test_mode"] else 443)
+
+        if data["api_id"] is not None:
+            await self.api_id(data["api_id"])
+
     async def open(self):
         if self.in_memory:
             self.conn = await aiosqlite.connect(":memory:", timeout=5)
             await self.create()
 
             if self.session_string:
-                data = self._decode_session_string(self.session_string)
-                await self.dc_id(data["dc_id"])
-                await self.test_mode(data["test_mode"])
-                await self.auth_key(data["auth_key"])
-                await self.user_id(data["user_id"])
-                await self.is_bot(data["is_bot"])
-                await self.date(0)
-
-                if data["api_id"] is not None:
-                    if data["server_address"] is not None:
-                        await self.server_address(data["server_address"])
-                        await self.port(data["port"])
-                    else:
-                        if data["test_mode"]:
-                            await self.server_address(TEST[data["dc_id"]])
-                            await self.port(80)
-                        else:
-                            await self.server_address(PROD[data["dc_id"]])
-                            await self.port(443)
-
-                    await self.api_id(data["api_id"])
+                await self.load_session_string(self.session_string)
 
             await self._ensure_committed()
             return
@@ -286,7 +344,7 @@ class SQLiteStorage(Storage):
 
         lock_path = path.with_suffix(".session.lock")
         self._lock_fd = _try_lock(lock_path)
-        if self._lock_fd is None and file_exists:
+        if self._lock_fd is None and fcntl is not None and file_exists:
             log.warning("Could not acquire lock on %s — another client may be using the same session", lock_path)
 
         self.conn = await aiosqlite.connect(str(path), timeout=5)
@@ -322,6 +380,10 @@ class SQLiteStorage(Storage):
         await self._ensure_committed()
 
     async def close(self):
+        if self._flush_task is not None:
+            self._flush_task.cancel()
+            self._flush_task = None
+
         await self._ensure_committed()
 
         if self.conn:
@@ -357,6 +419,7 @@ class SQLiteStorage(Storage):
         await self.conn.executemany(
             "REPLACE INTO peers (id, access_hash, type, phone_number) VALUES (?, ?, ?, ?)", peers
         )
+        await self._maybe_commit()
 
     async def update_usernames(self, usernames: List[Tuple[int, List[str]]]):
         if not usernames:
@@ -367,6 +430,7 @@ class SQLiteStorage(Storage):
             "REPLACE INTO usernames (id, username) VALUES (?, ?)",
             [(id, username) for id, usernames in usernames for username in usernames],
         )
+        await self._maybe_commit()
 
     async def update_state(self, value: Tuple[int, int, int, int, int] = object):
         if value is object:
@@ -387,6 +451,8 @@ class SQLiteStorage(Storage):
                     "  seq   = excluded.seq",
                     value,
                 )
+
+            await self._maybe_commit()
 
     async def get_peer_by_id(self, peer_id: int):
         cursor = await self.conn.execute(
@@ -445,7 +511,6 @@ class SQLiteStorage(Storage):
             raise ConnectionError("Database is not open")
         await self.conn.execute(f"UPDATE sessions SET {attr} = ?", (value,))
         self._cache[attr] = value
-        self._dirty = True
         await self._maybe_commit()
 
     async def dc_id(self, value: int = object):

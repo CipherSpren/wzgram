@@ -51,9 +51,13 @@ async def ainput(prompt: str = "", *, hide: bool = False, loop: Optional[asyncio
     if not isinstance(loop, asyncio.AbstractEventLoop):
         loop = asyncio.get_running_loop()
 
-    with ThreadPoolExecutor(1) as executor:
+    executor = ThreadPoolExecutor(1)
+
+    try:
         func = functools.partial(getpass if hide else input, prompt)
         return await loop.run_in_executor(executor, func)
+    finally:
+        executor.shutdown(wait=False)
 
 
 def get_input_media_from_file_id(
@@ -819,3 +823,22 @@ def get_premium_duration_day_count(month_count: int) -> int:
 
     return month_count * 30 + month_count // 3 + month_count // 12
 
+
+
+_background_tasks = set()
+
+
+def run_in_background(coro, loop: Optional[asyncio.AbstractEventLoop] = None) -> "asyncio.Task":
+    """Schedule a coroutine and hold the task until it finishes.
+
+    The event loop only keeps a weak reference to a task, so one whose sole
+    reference is the loop can be collected mid-await and simply stop running.
+    Fire-and-forget work has no caller left to await it, which is exactly the
+    case that needs the strong reference.
+    """
+    task = (loop or get_event_loop()).create_task(coro)
+
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return task

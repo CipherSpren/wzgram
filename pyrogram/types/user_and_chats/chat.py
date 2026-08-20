@@ -297,6 +297,18 @@ class Chat(Object):
         subscription_until_date (:py:obj:`~datetime.datetime`, *optional*):
             Date when the the subscription will end.
 
+        community (:obj:`~pyrogram.types.Community`, *optional*):
+            The community this chat belongs to.
+
+        emoji_status (:obj:`~pyrogram.types.EmojiStatus`, *optional*):
+            Emoji status shown next to the chat name.
+
+        join_to_send_messages (``bool``, *optional*):
+            True, if users need to join the supergroup before they can send messages.
+
+        location (:obj:`~pyrogram.types.ChatLocation`, *optional*):
+            For supergroups, the location to which the supergroup is connected.
+
         reactions_limit (``int``, *optional*):
             This flag may be used to impose a custom limit of unique reactions (i.e. a customizable version of appConfig.reactions_uniq_max).
 
@@ -617,6 +629,10 @@ class Chat(Object):
         join_requests_count: Optional[int] = None,
         banned_until_date: Optional[datetime] = None,
         subscription_until_date: Optional[datetime] = None,
+        emoji_status: Optional["types.EmojiStatus"] = None,
+        community: Optional["types.Community"] = None,
+        join_to_send_messages: Optional[bool] = None,
+        location: Optional["types.ChatLocation"] = None,
         reactions_limit: Optional[int] = None,
         gift_count: Optional[int] = None,
         bot_verification: Optional["types.BotVerification"] = None,
@@ -758,6 +774,10 @@ class Chat(Object):
         self.join_requests_count = join_requests_count
         self.banned_until_date = banned_until_date
         self.subscription_until_date = subscription_until_date
+        self.emoji_status = emoji_status
+        self.community = community
+        self.join_to_send_messages = join_to_send_messages
+        self.location = location
         self.reactions_limit = reactions_limit
         self.gift_count = gift_count
         self.bot_verification = bot_verification
@@ -868,6 +888,7 @@ class Chat(Object):
             dc_id=getattr(getattr(user, "photo", None), "dc_id", None),
             reply_color=types.ChatColor._parse(user.color),
             profile_color=types.ChatColor._parse_profile_color(user.profile_color),
+            emoji_status=types.EmojiStatus._parse(client, user.emoji_status),
             paid_message_star_count=user.send_paid_messages_stars,
             can_manage_bots=user.bot_can_manage_bots,
             raw=user,
@@ -969,6 +990,8 @@ class Chat(Object):
             level=channel.level,
             reply_color=types.ChatColor._parse(channel.color),
             profile_color=types.ChatColor._parse(channel.profile_color),
+            emoji_status=types.EmojiStatus._parse(client, channel.emoji_status),
+            join_to_send_messages=channel.join_to_send,
             subscription_until_date=utils.timestamp_to_datetime(channel.subscription_until_date),
             paid_message_star_count=channel.send_paid_messages_stars,
             has_automatic_translation=channel.autotranslation,
@@ -1156,6 +1179,13 @@ class Chat(Object):
         parsed_chat = Chat._parse_chat_chat(client, chats[chat.id])
         parsed_chat.raw = chat
 
+        community_id = getattr(chats.get(chat.id), "linked_community_id", None)
+
+        if community_id is not None:
+            parsed_chat.community = types.Community._parse(
+                client, chats.get(community_id)
+            )
+
         parsed_chat.description = chat.about or None
 
         if isinstance(chat.participants, raw.types.ChatParticipants):
@@ -1215,6 +1245,7 @@ class Chat(Object):
         parsed_chat.can_delete_channel = channel.can_delete_channel
         parsed_chat.has_aggressive_anti_spam_enabled = channel.antispam
         parsed_chat.is_members_hidden = channel.participants_hidden
+        parsed_chat.location = types.ChatLocation._parse(client, channel.location)
         parsed_chat.is_translations_disabled = channel.translations_disabled
         parsed_chat.is_pinned_stories_available = channel.stories_pinned_available
         parsed_chat.view_forum_as_messages = channel.view_forum_as_messages
@@ -1365,6 +1396,71 @@ class Chat(Object):
     @property
     def full_name(self) -> str:
         return " ".join(filter(None, [self.first_name, self.last_name])) or self.title or None
+
+    async def listen(self, *args, **kwargs):
+        """Bound method *listen* of :obj:`~pyrogram.types.Chat`.
+
+        Use as a shortcut for:
+
+        .. code-block:: python
+
+            await client.listen(chat_id=chat.id)
+
+        Example:
+            .. code-block:: python
+
+                await chat.listen()
+
+        Returns:
+            :obj:`~pyrogram.types.Message` | :obj:`~pyrogram.types.CallbackQuery`:
+            The matching update.
+
+        Raises:
+            ListenerTimeout: In case no matching update arrived in time.
+        """
+        return await self._client.listen(*args, chat_id=self.id, **kwargs)
+
+    async def ask(self, text: str, *args, **kwargs):
+        """Bound method *ask* of :obj:`~pyrogram.types.Chat`.
+
+        Use as a shortcut for:
+
+        .. code-block:: python
+
+            await client.ask(chat.id, "What is your name?")
+
+        Example:
+            .. code-block:: python
+
+                await chat.ask("What is your name?")
+
+        Returns:
+            :obj:`~pyrogram.types.Message` | :obj:`~pyrogram.types.CallbackQuery`:
+            The answer, with the prompt attached as ``sent_message``.
+
+        Raises:
+            ListenerTimeout: In case nobody answered in time.
+        """
+        return await self._client.ask(self.id, text, *args, **kwargs)
+
+    async def stop_listening(self, *args, **kwargs):
+        """Bound method *stop_listening* of :obj:`~pyrogram.types.Chat`.
+
+        Use as a shortcut for:
+
+        .. code-block:: python
+
+            await client.stop_listening(chat_id=chat.id)
+
+        Example:
+            .. code-block:: python
+
+                await chat.stop_listening()
+
+        Returns:
+            ``int``: Number of listeners that were stopped.
+        """
+        return await self._client.stop_listening(*args, chat_id=self.id, **kwargs)
 
     async def archive(self):
         """Bound method *archive* of :obj:`~pyrogram.types.Chat`.

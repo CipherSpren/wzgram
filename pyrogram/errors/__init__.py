@@ -59,9 +59,42 @@ class SecurityCheckMismatch(SecurityError):
         super().__init__("A security check mismatch has occurred." if msg is None else msg)
 
 
+class ReplayedMsgId(SecurityCheckMismatch):
+    """Raised when a msg_id was already seen or has fallen out of the replay window."""
+
+
 class CDNFileHashMismatch(SecurityError):
     """Raised when a CDN file hash mismatch occurs."""
 
     def __init__(self, msg: Optional[str] = None):
         super().__init__("A CDN file hash mismatch has occurred." if msg is None else msg)
 
+
+class ListenerError(Exception):
+    """Base class for listener errors."""
+
+
+class ListenerTimeout(ListenerError):
+    """Raised when a listener expires before a matching update arrives."""
+
+    def __init__(self, timeout: float):
+        self.timeout = timeout
+        super().__init__(f"Listener timed out after {timeout}s")
+
+
+class ListenerStopped(ListenerError):
+    """Raised when a listener is stopped before a matching update arrives."""
+
+    def __init__(self, msg: Optional[str] = None):
+        super().__init__("Listener stopped" if msg is None else msg)
+
+
+class ListenerLimitReached(ListenerError):
+    """Raised when no listener slot is available."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        super().__init__(
+            f"Cannot register more than {limit} concurrent listeners. "
+            "Raise WZGRAM_MAX_LISTENERS or stop unused listeners."
+        )

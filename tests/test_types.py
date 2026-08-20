@@ -1,10 +1,10 @@
-from datetime import datetime
-from unittest.mock import Mock
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 import pyrogram
-from pyrogram import enums, types
+from pyrogram import enums, raw, types
 from pyrogram.types import Object
 from pyrogram.types.messages_and_media.message import Str as MessageStr
 from pyrogram.types.user_and_chats.user import Link as UserLink
@@ -833,3 +833,569 @@ class TestCommunity:
     def test_community_chat_removed(self):
         removed = types.CommunityChatRemoved()
         assert removed.community_id is None
+
+
+class TestKeyboardButtonRequests:
+    """The request_* buttons must survive a write/read round trip.
+
+    Their types were exported long before KeyboardButton could carry them, so a
+    constructor argument that never reaches the wire looks correct from the
+    outside.
+    """
+
+    def test_request_users_round_trips(self):
+        button = types.KeyboardButton(
+            text="Pick users",
+            request_users=types.KeyboardButtonRequestUsers(
+                button_id=7,
+                user_is_bot=False,
+                user_is_premium=True,
+                max_quantity=3,
+                request_name=True,
+                request_username=True
+            )
+        )
+
+        raw_button = button.write()
+
+        assert isinstance(raw_button.peer_type, raw.types.RequestPeerTypeUser)
+        assert raw_button.button_id == 7
+        assert raw_button.max_quantity == 3
+
+        parsed = types.KeyboardButton.read(raw_button)
+
+        assert parsed.request_users.button_id == 7
+        assert parsed.request_users.user_is_premium is True
+        assert parsed.request_users.max_quantity == 3
+        assert parsed.request_users.request_name is True
+
+    def test_request_chat_round_trips_a_channel(self):
+        button = types.KeyboardButton(
+            text="Pick a channel",
+            request_chat=types.KeyboardButtonRequestChat(
+                button_id=9,
+                chat_is_channel=True,
+                chat_is_created=True,
+                user_administrator_rights=types.ChatAdministratorRights(
+                    can_post_messages=True
+                )
+            )
+        )
+
+        raw_button = button.write()
+
+        assert isinstance(raw_button.peer_type, raw.types.RequestPeerTypeBroadcast)
+
+        parsed = types.KeyboardButton.read(raw_button)
+
+        assert parsed.request_chat.chat_is_channel is True
+        assert parsed.request_chat.chat_is_created is True
+        assert parsed.request_chat.user_administrator_rights.can_post_messages is True
+
+    def test_request_chat_round_trips_a_group(self):
+        button = types.KeyboardButton(
+            text="Pick a group",
+            request_chat=types.KeyboardButtonRequestChat(
+                button_id=1,
+                chat_is_channel=False,
+                bot_is_member=True
+            )
+        )
+
+        raw_button = button.write()
+
+        assert isinstance(raw_button.peer_type, raw.types.RequestPeerTypeChat)
+        assert types.KeyboardButton.read(raw_button).request_chat.bot_is_member is True
+
+    def test_request_poll_round_trips(self):
+        button = types.KeyboardButton(
+            text="Make a quiz",
+            request_poll=types.KeyboardButtonPollType(is_quiz=True)
+        )
+
+        raw_button = button.write()
+
+        assert isinstance(raw_button, raw.types.KeyboardButtonRequestPoll)
+        assert types.KeyboardButton.read(raw_button).request_poll.is_quiz is True
+
+    def test_request_managed_bot_round_trips(self):
+        button = types.KeyboardButton(
+            text="New bot",
+            request_managed_bot=types.KeyboardButtonRequestManagedBot(
+                button_id=1,
+                suggested_name="Name",
+                suggested_username="username"
+            )
+        )
+
+        raw_button = button.write()
+
+        assert isinstance(raw_button.peer_type, raw.types.RequestPeerTypeCreateBot)
+
+        parsed = types.KeyboardButton.read(raw_button)
+
+        assert parsed.request_managed_bot.suggested_username == "username"
+
+    def test_style_and_icon_round_trip(self):
+        button = types.KeyboardButton(
+            text="Danger",
+            style=enums.ButtonStyle.DANGER,
+            icon_custom_emoji_id="5555"
+        )
+
+        raw_button = button.write()
+
+        assert raw_button.style.bg_danger is True
+
+        parsed = types.KeyboardButton.read(raw_button)
+
+        assert parsed.style == enums.ButtonStyle.DANGER
+        assert parsed.icon_custom_emoji_id == "5555"
+
+    def test_a_plain_button_still_reads_back_as_text(self):
+        assert types.KeyboardButton.read(raw.types.KeyboardButton(text="hi")) == "hi", (
+            "ReplyKeyboardMarkup relies on plain buttons collapsing to a string"
+        )
+
+    def test_contact_and_location_are_unchanged(self):
+        contact = types.KeyboardButton(text="c", request_contact=True)
+        location = types.KeyboardButton(text="l", request_location=True)
+
+        assert isinstance(contact.write(), raw.types.KeyboardButtonRequestPhone)
+        assert isinstance(location.write(), raw.types.KeyboardButtonRequestGeoLocation)
+        assert types.KeyboardButton.read(contact.write()).request_contact is True
+        assert types.KeyboardButton.read(location.write()).request_location is True
+
+
+class TestChatCoverageFields:
+    """Fields added to close Bot API gaps must actually parse, not just exist.
+
+    A constructor argument that no _parse ever populates satisfies a signature
+    check while always being None in practice.
+    """
+
+    @staticmethod
+    def channel(**kwargs):
+        kwargs.setdefault("usernames", [])
+        kwargs.setdefault("restriction_reason", [])
+
+        return raw.types.Channel(
+            id=777,
+            title="Test",
+            photo=raw.types.ChatPhotoEmpty(),
+            date=0,
+            **kwargs
+        )
+
+    def test_join_to_send_messages_is_parsed(self):
+        chat = types.Chat._parse_channel_chat(None, self.channel(join_to_send=True))
+
+        assert chat.join_to_send_messages is True
+
+    def test_emoji_status_is_parsed_for_a_channel(self):
+        chat = types.Chat._parse_channel_chat(
+            None,
+            self.channel(emoji_status=raw.types.EmojiStatus(document_id=555, until=1893456000))
+        )
+
+        assert chat.emoji_status.custom_emoji_id == "555"
+        assert chat.emoji_status.until_date is not None
+
+    def test_emoji_status_is_parsed_for_a_user(self):
+        user = raw.types.User(
+            id=42,
+            first_name="A",
+            usernames=[],
+            restriction_reason=[],
+            emoji_status=raw.types.EmojiStatus(document_id=999)
+        )
+        chat = types.Chat._parse_user_chat(None, user)
+
+        assert chat.emoji_status.custom_emoji_id == "999"
+
+    def test_absent_values_stay_none(self):
+        chat = types.Chat._parse_channel_chat(None, self.channel())
+
+        assert chat.join_to_send_messages is None
+        assert chat.emoji_status is None
+        assert chat.location is None
+
+
+class TestChatLocation:
+    def test_it_parses_a_channel_location(self):
+        location = types.ChatLocation._parse(
+            None,
+            raw.types.ChannelLocation(
+                geo_point=raw.types.GeoPoint(
+                    long=12.5, lat=41.9, access_hash=0, accuracy_radius=50
+                ),
+                address="Rome, Italy"
+            )
+        )
+
+        assert location.address == "Rome, Italy"
+        assert location.location.latitude == 41.9
+        assert location.location.longitude == 12.5
+
+    def test_an_empty_location_is_none(self):
+        assert types.ChatLocation._parse(None, raw.types.ChannelLocationEmpty()) is None
+
+
+class TestInlineResultCaptionPlacement:
+    """show_caption_above_media has to reach inputBotInlineMessageMediaAuto.
+
+    MTProto carries it as invert_media on the inline message, and only there:
+    inputSingleMedia has no such flag, which is why album items cannot have it.
+    """
+
+    PHOTO_FILE_ID = "AgACAgIAAx0CAAGgr9AAAgmZX7b7IPLRl8NcV3EJkzHwI1gwT-oAAq2nMRuBpLlJPJY-URZfhTkgfeqKEAADAQADAgADbQADAZ8BAAEeBA"
+
+    @staticmethod
+    def client():
+        client = AsyncMock()
+        client.parser.parse = AsyncMock(return_value={"message": "cap", "entities": []})
+
+        return client
+
+    @pytest.mark.parametrize("flag,expected", [(True, True), (None, None)])
+    async def test_a_url_result_forwards_the_flag(self, flag, expected):
+        result = types.InlineQueryResultPhoto(
+            photo_url="https://example.com/p.jpg",
+            caption="cap",
+            show_caption_above_media=flag
+        )
+        written = await result.write(self.client())
+
+        assert written.send_message.invert_media is expected
+
+    async def test_a_cached_result_forwards_the_flag(self):
+        result = types.InlineQueryResultCachedPhoto(
+            photo_file_id=self.PHOTO_FILE_ID,
+            caption="cap",
+            show_caption_above_media=True
+        )
+        written = await result.write(self.client())
+
+        assert written.send_message.invert_media is True
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "InlineQueryResultPhoto",
+            "InlineQueryResultVideo",
+            "InlineQueryResultCachedPhoto",
+            "InlineQueryResultCachedVideo",
+        ]
+    )
+    def test_every_captioned_inline_result_accepts_it(self, name):
+        import inspect
+
+        assert "show_caption_above_media" in inspect.signature(
+            getattr(types, name).__init__
+        ).parameters
+
+
+class TestInlineKeyboardButtonAdditions:
+    """copy_text, pay and switch_inline_query_chosen_chat must reach the wire.
+
+    pay was present in the docstring but its assignment was commented out, so it
+    was accepted and silently dropped.
+    """
+
+    @staticmethod
+    async def written(**kwargs):
+        return await types.InlineKeyboardButton(**kwargs).write(AsyncMock())
+
+    async def test_copy_text_round_trips(self):
+        written = await self.written(
+            text="Copy", copy_text=types.CopyTextButton(text="hello")
+        )
+
+        assert isinstance(written, raw.types.KeyboardButtonCopy)
+        assert written.copy_text == "hello"
+        assert types.InlineKeyboardButton.read(written).copy_text.text == "hello"
+
+    async def test_pay_round_trips(self):
+        written = await self.written(text="Pay", pay=True)
+
+        assert isinstance(written, raw.types.KeyboardButtonBuy)
+        assert types.InlineKeyboardButton.read(written).pay is True
+
+    async def test_chosen_chat_maps_every_peer_type(self):
+        written = await self.written(
+            text="Pick",
+            switch_inline_query_chosen_chat=types.SwitchInlineQueryChosenChat(
+                query="hi",
+                allow_user_chats=True,
+                allow_bot_chats=True,
+                allow_group_chats=True,
+                allow_channel_chats=True
+            )
+        )
+
+        assert {type(p).__name__ for p in written.peer_types} == {
+            "InlineQueryPeerTypePM",
+            "InlineQueryPeerTypeBotPM",
+            "InlineQueryPeerTypeChat",
+            "InlineQueryPeerTypeMegagroup",
+            "InlineQueryPeerTypeBroadcast",
+        }
+
+        parsed = types.InlineKeyboardButton.read(written).switch_inline_query_chosen_chat
+
+        assert parsed.query == "hi"
+        assert parsed.allow_user_chats is True
+        assert parsed.allow_bot_chats is True
+        assert parsed.allow_group_chats is True
+        assert parsed.allow_channel_chats is True
+
+    async def test_a_partial_chosen_chat_leaves_the_rest_unset(self):
+        written = await self.written(
+            text="Pick",
+            switch_inline_query_chosen_chat=types.SwitchInlineQueryChosenChat(
+                allow_channel_chats=True
+            )
+        )
+        parsed = types.InlineKeyboardButton.read(written).switch_inline_query_chosen_chat
+
+        assert parsed.allow_channel_chats is True
+        assert parsed.allow_user_chats is None
+        assert parsed.allow_group_chats is None
+
+    async def test_the_existing_switch_buttons_are_unchanged(self):
+        plain = await self.written(text="x", switch_inline_query="q")
+
+        assert isinstance(plain, raw.types.KeyboardButtonSwitchInline)
+        assert not plain.peer_types
+
+        same_peer = raw.types.KeyboardButtonSwitchInline(
+            text="x", query="q", same_peer=True
+        )
+
+        assert types.InlineKeyboardButton.read(
+            same_peer
+        ).switch_inline_query_current_chat == "q"
+
+
+class TestSendGameSendOptions:
+    """send_game exposed almost none of messages.sendMedia's send options.
+
+    A widened signature proves nothing on its own; each argument has to appear on
+    the raw request.
+    """
+
+    @staticmethod
+    async def sent(**kwargs):
+        from pyrogram.methods.bots.send_game import SendGame
+
+        captured = {}
+
+        async def invoke(query, *args, **kw):
+            captured["query"] = query
+
+            return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+
+        client = AsyncMock(spec=pyrogram.Client)
+        client.invoke = invoke
+        client.resolve_peer = AsyncMock(return_value=raw.types.InputPeerSelf())
+        client.rnd_id = lambda: 1
+
+        await SendGame.send_game(client, chat_id=1, game_short_name="g", **kwargs)
+
+        return captured["query"]
+
+    async def test_every_send_option_reaches_the_request(self):
+        query = await self.sent(
+            schedule_date=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            repeat_period=3600,
+            paid_message_star_count=5,
+            background=True,
+            clear_draft=True,
+            update_stickersets_order=True,
+            send_as=2,
+            quick_reply_shortcut=7
+        )
+
+        assert query.schedule_date == 1893456000
+        assert query.schedule_repeat_period == 3600
+        assert query.allow_paid_stars == 5
+        assert query.background is True
+        assert query.clear_draft is True
+        assert query.update_stickersets_order is True
+        assert isinstance(query.send_as, raw.types.InputPeerSelf)
+        assert query.quick_reply_shortcut.shortcut_id == 7
+
+    async def test_omitting_them_sends_nothing(self):
+        query = await self.sent()
+
+        assert query.schedule_date is None
+        assert query.send_as is None
+        assert query.quick_reply_shortcut is None
+        assert query.allow_paid_stars is None
+
+
+class TestEditFamilySendOptions:
+    """The editMessage family never exposed messages.editMessage's own options.
+
+    A scheduled message can be rescheduled and a quick reply shortcut retargeted,
+    but neither reached the request.
+    """
+
+    METHODS = {
+        "stop_poll": "pyrogram.methods.messages.stop_poll:StopPoll",
+        "edit_message_reply_markup":
+            "pyrogram.methods.messages.edit_message_reply_markup:EditMessageReplyMarkup",
+        "edit_message_checklist":
+            "pyrogram.methods.messages.edit_message_checklist:EditMessageChecklist",
+    }
+
+    @staticmethod
+    async def sent(dotted, name, **kwargs):
+        import importlib
+
+        module, cls = dotted.split(":")
+        method = getattr(getattr(importlib.import_module(module), cls), name)
+        captured = {}
+
+        async def invoke(query, *args, **kw):
+            captured["query"] = query
+            captured.update(kw)
+
+            return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+
+        client = AsyncMock()
+        client.invoke = invoke
+        client.resolve_peer = AsyncMock(return_value=raw.types.InputPeerSelf())
+        client.parser.parse = AsyncMock(return_value={"message": "t", "entities": []})
+
+        try:
+            await method(client, chat_id=1, message_id=2, **kwargs)
+        except Exception:
+            # the fake reply carries no updates, so parsing the result fails; the
+            # request has already been captured by then, and a request that never
+            # happened still fails on the missing key
+            pass
+
+        return captured
+
+    REQUIRED = {
+        "edit_message_checklist": dict(
+            checklist=types.InputChecklist(
+                title="t", tasks=[types.InputChecklistTask(id=1, text="a")]
+            )
+        )
+    }
+
+    @pytest.mark.parametrize("name", sorted(METHODS))
+    async def test_schedule_options_reach_the_request(self, name):
+        captured = await self.sent(
+            self.METHODS[name],
+            name,
+            schedule_date=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            repeat_period=60,
+            quick_reply_shortcut=9,
+            **self.REQUIRED.get(name, {})
+        )
+        query = captured["query"]
+
+        assert query.schedule_date == 1893456000
+        assert query.schedule_repeat_period == 60
+        assert query.quick_reply_shortcut_id == 9
+
+    async def test_stop_poll_forwards_the_business_connection(self):
+        captured = await self.sent(
+            self.METHODS["stop_poll"], "stop_poll", business_connection_id="bc1"
+        )
+
+        assert captured["business_connection_id"] == "bc1"
+
+
+class TestPinBusinessConnection:
+    @pytest.mark.parametrize(
+        "dotted,name",
+        [
+            ("pyrogram.methods.chats.pin_chat_message:PinChatMessage", "pin_chat_message"),
+            ("pyrogram.methods.chats.unpin_chat_message:UnpinChatMessage", "unpin_chat_message"),
+        ]
+    )
+    async def test_it_reaches_invoke(self, dotted, name):
+        import importlib
+
+        module, cls = dotted.split(":")
+        method = getattr(getattr(importlib.import_module(module), cls), name)
+        captured = {}
+
+        async def invoke(query, *args, **kw):
+            captured.update(kw)
+
+            return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+
+        client = AsyncMock(spec=pyrogram.Client)
+        client.invoke = invoke
+        client.resolve_peer = AsyncMock(return_value=raw.types.InputPeerSelf())
+
+        await method(client, chat_id=1, message_id=2, business_connection_id="bc1")
+
+        assert captured["business_connection_id"] == "bc1"
+
+
+class TestQuizPollSerialises:
+    """A quiz poll could not be sent at all.
+
+    TL layer 228 declares inputMediaPoll.correct_answers as Vector<int>, but
+    send_poll still built it as bytes, so every quiz died in Int.__new__ with
+    "'bytes' object has no attribute 'to_bytes'" the moment the request was
+    serialised.
+    """
+
+    @staticmethod
+    async def sent(**kwargs):
+        from pyrogram.methods.messages.send_poll import SendPoll
+
+        captured = {}
+
+        async def invoke(query, *args, **kw):
+            captured["query"] = query
+
+            return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+
+        client = AsyncMock()
+        client.invoke = invoke
+        client.resolve_peer = AsyncMock(return_value=raw.types.InputPeerSelf())
+        client.rnd_id = lambda: 1
+        client.parser.parse = AsyncMock(return_value={"message": "q", "entities": []})
+
+        await SendPoll.send_poll(client, chat_id=1, **kwargs)
+
+        return captured["query"]
+
+    async def test_a_single_correct_answer_serialises(self):
+        query = await self.sent(
+            question="Q?",
+            options=["a", "b"],
+            type=enums.PollType.QUIZ,
+            correct_option_id=1,
+            explanation="because"
+        )
+
+        assert query.media.correct_answers == [1]
+        query.write()
+
+    async def test_several_correct_answers_serialise(self):
+        query = await self.sent(
+            question="Q?",
+            options=["a", "b"],
+            type=enums.PollType.QUIZ,
+            correct_option_ids=[0, 1]
+        )
+
+        assert query.media.correct_answers == [0, 1]
+        query.write()
+
+    async def test_the_option_index_stays_bytes(self):
+        query = await self.sent(question="Q?", options=["a", "b"])
+
+        assert [answer.option for answer in query.media.poll.answers] == [b"\x00", b"\x01"], (
+            "pollAnswer.option is still bytes in the schema, unlike correct_answers"
+        )
+        query.write()

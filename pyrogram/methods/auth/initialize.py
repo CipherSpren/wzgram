@@ -43,10 +43,37 @@ class Initialize:
         if self.is_initialized:
             raise ConnectionError("Client is already initialized")
 
+        self.listeners.reopen()
+
         self.load_plugins()
 
-        await self.dispatcher.start()
+        try:
+            await self.dispatcher.start()
 
-        self.updates_watchdog_task = asyncio.create_task(self.updates_watchdog())
+            self.updates_watchdog_task = asyncio.create_task(self.updates_watchdog())
+            self.media_pool_reaper_task = asyncio.create_task(self.media_pool_reaper())
+        except BaseException:
+            # is_initialized is still False, so terminate() would refuse to run and
+            # the handler workers would sit on the update queue for the life of the
+            # process. Whatever got started here has to be taken back down.
+            for name in ("updates_watchdog_task", "media_pool_reaper_task"):
+                task = getattr(self, name)
+
+                if task is not None:
+                    task.cancel()
+
+                    try:
+                        await task
+                    except (Exception, asyncio.CancelledError):
+                        pass
+
+                    setattr(self, name, None)
+
+            try:
+                await self.dispatcher.stop()
+            except Exception:
+                log.exception("Error stopping the dispatcher after a failed initialize")
+
+            raise
 
         self.is_initialized = True

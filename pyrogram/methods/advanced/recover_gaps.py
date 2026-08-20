@@ -16,18 +16,21 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
+import asyncio
 import logging
 from typing import Tuple
 
 import pyrogram
 from pyrogram import raw
-from pyrogram.errors import ChannelInvalid, ChannelPrivate, PersistentTimestampInvalid, PersistentTimestampOutdated
+from pyrogram.errors import ChannelInvalid, ChannelPrivate, PeerIdInvalid, PersistentTimestampInvalid, PersistentTimestampOutdated
 from pyrogram.utils import ZERO_CHANNEL_ID
 
 log = logging.getLogger(__name__)
 
 
 class RecoverGaps:
+    MAX_STALE_TIMESTAMP_RETRIES = 3
+
     async def recover_gaps(self: "pyrogram.Client") -> Tuple[int, int]:
         """Restores updates for the time while the client was offline.
 
@@ -59,6 +62,9 @@ class RecoverGaps:
             id, local_pts, local_qts, local_date, local_seq = local_state
 
             prev_pts = 0
+            stale_attempts = 0
+            unusable = False
+            failed = False
 
             while True:
                 try:
@@ -76,11 +82,30 @@ class RecoverGaps:
                             qts=0
                         )
                     )
-                except (ChannelPrivate, ChannelInvalid):
-                    await self.storage.update_state(id)
+                except (ChannelPrivate, ChannelInvalid, PeerIdInvalid):
+                    unusable = True
                     break
-                except (PersistentTimestampOutdated, PersistentTimestampInvalid):
+                except (PersistentTimestampOutdated, PersistentTimestampInvalid) as e:
+                    stale_attempts += 1
+
+                    if stale_attempts >= RecoverGaps.MAX_STALE_TIMESTAMP_RETRIES:
+                        log.info(
+                            "Dropping the stored state of %s: %s after %s attempts",
+                            id, e.ID, stale_attempts
+                        )
+                        unusable = True
+                        break
+
+                    await asyncio.sleep(stale_attempts)
                     continue
+                except Exception:
+                    # this runs inside dispatcher.start(): one peer that cannot be
+                    # fetched must not stop every peer after it, nor the client
+                    # from coming up at all. The state is kept, so the next start
+                    # tries again.
+                    log.exception("Gap recovery failed for %s", id)
+                    failed = True
+                    break
 
                 if isinstance(diff, raw.types.updates.DifferenceEmpty):
                     await self.storage.update_state(
@@ -149,26 +174,29 @@ class RecoverGaps:
 
                 for message in diff.new_messages:
                     message_updates_counter += 1
-                    self.dispatcher.updates_queue.put_nowait(
-                        (
-                            raw.types.UpdateNewMessage(
-                                message=message,
-                                pts=local_pts,
-                                pts_count=-1
-                            ),
-                            users,
-                            chats
-                        )
+                    await self.dispatcher.enqueue_update(
+                        raw.types.UpdateNewMessage(
+                            message=message,
+                            pts=local_pts,
+                            pts_count=-1
+                        ),
+                        users,
+                        chats
                     )
 
                 for update in diff.other_updates:
                     other_updates_counter += 1
-                    self.dispatcher.updates_queue.put_nowait(
-                        (update, users, chats)
-                    )
+                    await self.dispatcher.enqueue_update(update, users, chats)
 
                 if isinstance(diff, (raw.types.updates.Difference, raw.types.updates.ChannelDifference)):
                     break
+
+            if failed:
+                continue
+
+            if unusable:
+                await self.storage.update_state(id)
+                continue
 
             await self.storage.update_state(
                 (

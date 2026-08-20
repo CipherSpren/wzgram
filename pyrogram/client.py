@@ -26,6 +26,7 @@ import platform
 import re
 import shutil
 import sys
+import weakref
 import time
 from concurrent.futures.thread import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -60,7 +61,7 @@ from pyrogram.methods.rate_limiter import TokenBucket
 from pyrogram.qrlogin import QRLogin
 from pyrogram.session import Auth, Session
 from pyrogram.storage import SQLiteStorage, Storage
-from pyrogram.types import LinkPreviewOptions, TermsOfService, User
+from pyrogram.types import LinkPreviewOptions, ListenerRegistry, TermsOfService, User
 from pyrogram.utils import ainput
 
 from .connection import Connection
@@ -72,6 +73,94 @@ from .parser import Parser
 from .session.internals import MsgId
 
 log = logging.getLogger(__name__)
+
+_handler_executor: Optional[ThreadPoolExecutor] = None
+
+
+def get_handler_executor() -> ThreadPoolExecutor:
+    global _handler_executor
+
+    if _handler_executor is None:
+        override = os.environ.get("WZGRAM_HANDLER_WORKERS")
+
+        try:
+            size = max(1, int(override)) if override else 0
+        except ValueError:
+            size = 0
+
+        _handler_executor = ThreadPoolExecutor(
+            size or min(16, max(4, (os.cpu_count() or 1) * 2)),
+            thread_name_prefix="Handler"
+        )
+
+    return _handler_executor
+
+
+_transfer_budgets: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def transfer_budget(size: int) -> asyncio.Semaphore:
+    loop = asyncio.get_event_loop()
+    budget = _transfer_budgets.get(loop)
+
+    if budget is None:
+        budget = asyncio.Semaphore(size)
+        _transfer_budgets[loop] = budget
+
+    return budget
+
+
+class ReadAhead:
+    """Borrows read-ahead slots from a client-wide budget and always gives them back.
+
+    The budget is shared by every transfer, so a transfer that ends with chunks
+    still buffered — a short read, an early break out of ``stream_media`` — has
+    to return those slots or the pool bleeds away one transfer at a time.
+    """
+
+    __slots__ = ("_budget", "_held")
+
+    def __init__(self, budget: asyncio.Semaphore):
+        self._budget = budget
+        self._held = 0
+
+    async def acquire(self):
+        await self._budget.acquire()
+        self._held += 1
+
+    def release(self):
+        if self._held:
+            self._held -= 1
+            self._budget.release()
+
+    def release_all(self):
+        while self._held:
+            self.release()
+
+
+_pwrite = getattr(os, "pwrite", None)
+
+
+def write_at(fd: int, data: bytes, offset: int) -> None:
+    """Write *data* at *offset* without disturbing the file position.
+
+    ``os.pwrite`` is POSIX-only. On Windows the seek and the write are two
+    syscalls with no await between them, so concurrent download workers on the
+    event loop cannot interleave.
+    """
+    view = memoryview(data)
+
+    if _pwrite is not None:
+        while view:
+            written = _pwrite(fd, view, offset)
+            view = view[written:]
+            offset += written
+        return
+
+    os.lseek(fd, offset, os.SEEK_SET)
+
+    while view:
+        view = view[os.write(fd, view):]
 
 
 class Client(Methods):
@@ -216,6 +305,22 @@ class Client(Methods):
             Set the maximum size of the topic cache.
             Defaults to 1000.
 
+        max_listeners (``int``, *optional*):
+            Set the maximum number of concurrent listeners. The ceiling is shared
+            by every client on the event loop, so fifteen clients do not get
+            fifteen times the budget. Defaults to ``WZGRAM_MAX_LISTENERS`` (1000).
+
+        listener_timeout (``float``, *optional*):
+            Default timeout, in seconds, for :meth:`~pyrogram.Client.listen`.
+            Pass None to wait forever by default. Defaults to 300.
+
+        unallowed_click_alert (``bool``, *optional*):
+            Answer callback queries coming from a user a listener did not expect.
+            Defaults to True.
+
+        unallowed_click_alert_text (``str``, *optional*):
+            Text shown by *unallowed_click_alert*.
+
         storage_engine (:obj:`~pyrogram.storage.Storage`, *optional*):
             Pass an instance of your own implementation of session storage engine.
             Useful when you want to store your session in databases like Mongo, Redis, etc.
@@ -294,10 +399,17 @@ class Client(Methods):
     # Interval of seconds in which the updates watchdog will kick in
     UPDATES_WATCHDOG_INTERVAL = 15 * 60
 
+    MEDIA_SESSION_IDLE_TIMEOUT = int(os.environ.get("WZGRAM_MEDIA_SESSION_IDLE_TIMEOUT", 300))
+    MEDIA_SESSION_REAP_INTERVAL = 60
+
+    MAX_READ_AHEAD_CHUNKS = int(os.environ.get("WZGRAM_MAX_READ_AHEAD", 64))
+
     DOWNLOAD_POOL_SIZE = 4  # fallback default
     MAX_CONCURRENT_TRANSMISSIONS = 16
     MAX_MESSAGE_CACHE_SIZE = 1000
     MAX_TOPIC_CACHE_SIZE = 1000
+    LISTENER_TIMEOUT = 300
+    UNALLOWED_CLICK_ALERT_TEXT = "You are not expected to click this button."
 
     mimetypes = MimeTypes()
     mimetypes.readfp(StringIO(mime_types))
@@ -334,6 +446,10 @@ class Client(Methods):
         max_concurrent_transmissions: int = MAX_CONCURRENT_TRANSMISSIONS,
         max_message_cache_size: int = MAX_MESSAGE_CACHE_SIZE,
         max_topic_cache_size: int = MAX_TOPIC_CACHE_SIZE,
+        max_listeners: Optional[int] = None,
+        listener_timeout: Optional[float] = LISTENER_TIMEOUT,
+        unallowed_click_alert: bool = True,
+        unallowed_click_alert_text: str = UNALLOWED_CLICK_ALERT_TEXT,
         storage_engine: Optional[Storage] = None,
         client_platform: "enums.ClientPlatform" = enums.ClientPlatform.OTHER,
         link_preview_options: Optional[LinkPreviewOptions] = None,
@@ -381,6 +497,10 @@ class Client(Methods):
         self.hide_password = hide_password
         self.max_concurrent_transmissions = max_concurrent_transmissions
         self.max_message_cache_size = max_message_cache_size
+        self.max_listeners = max_listeners
+        self.listener_timeout = listener_timeout
+        self.unallowed_click_alert = unallowed_click_alert
+        self.unallowed_click_alert_text = unallowed_click_alert_text
         self.max_topic_cache_size = max_topic_cache_size
         self.client_platform = client_platform
         self.link_preview_options = link_preview_options
@@ -396,7 +516,7 @@ class Client(Methods):
         self.rate_limiter = RateLimiter(rate_limits) if rate_limits else RateLimiter()
         self.auto_no_updates = auto_no_updates
 
-        self.executor = ThreadPoolExecutor(max(1, self.workers // 4), thread_name_prefix="Handler")
+        self.executor = get_handler_executor()
         self.crypto_executor = get_crypto_executor()
 
         self.storage: Storage
@@ -415,10 +535,11 @@ class Client(Methods):
         else:
             self.storage = SQLiteStorage(self.name, workdir=self.workdir)
 
+        self.listeners = ListenerRegistry(self)
+
         self.dispatcher: Dispatcher = Dispatcher(self)
 
         self.rnd_id = MsgId
-        self._server_time_offset = 0.0
 
         self.parser: Parser = Parser(self)
 
@@ -429,11 +550,13 @@ class Client(Methods):
         self.sessions = {}
         self.media_sessions = {}
         self.media_session_pools = {}
-        self.sessions_lock = asyncio.Lock()
+        self._session_locks = {}
         self._media_sessions_locks = {}
 
         self.save_file_semaphore = asyncio.Semaphore(self.max_concurrent_transmissions)
         self.get_file_semaphore = asyncio.Semaphore(self.max_concurrent_transmissions)
+
+        self._session_creation_gate = asyncio.Semaphore(4)
 
         self.is_connected = None
         self.is_initialized = None
@@ -456,6 +579,10 @@ class Client(Methods):
         self.updates_watchdog_task = None
         self.updates_watchdog_event = asyncio.Event()
         self.last_update_time = datetime.now()
+        self._last_update_monotonic = time.monotonic()
+
+        self.media_pool_reaper_task = None
+        self.media_pool_reaper_event = asyncio.Event()
 
         if isinstance(loop, asyncio.AbstractEventLoop):
             self.loop = loop
@@ -463,6 +590,10 @@ class Client(Methods):
             self.loop = None
 
         self.__config: "raw.types.Config" = None
+
+    @property
+    def read_ahead_slots(self) -> asyncio.Semaphore:
+        return transfer_budget(self.MAX_READ_AHEAD_CHUNKS)
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop:
@@ -507,19 +638,82 @@ class Client(Methods):
             else:
                 break
 
-            if datetime.now() - self.last_update_time > timedelta(seconds=self.UPDATES_WATCHDOG_INTERVAL):
-                await self.invoke(raw.functions.updates.GetState())
-                await self.recover_gaps()
+            idle = time.monotonic() - self._last_update_monotonic
+
+            if idle > self.UPDATES_WATCHDOG_INTERVAL:
+                try:
+                    await self.invoke(raw.functions.updates.GetState())
+                    await self.recover_gaps()
+                except Exception:
+                    log.exception("Updates watchdog poll failed")
+
+    async def media_pool_reaper(self):
+        """Close media sessions that have gone idle since their transfer ended."""
+        while True:
+            try:
+                await asyncio.wait_for(
+                    self.media_pool_reaper_event.wait(),
+                    self.MEDIA_SESSION_REAP_INTERVAL
+                )
+            except asyncio.TimeoutError:
+                pass
+            else:
+                break
+
+            try:
+                await self.reap_media_sessions()
+            except Exception:
+                log.exception("Media session reaper failed")
+
+    async def reap_media_sessions(self, idle_timeout: Optional[int] = None) -> int:
+        """Stop pooled media sessions unused for longer than *idle_timeout* seconds."""
+        if idle_timeout is None:
+            idle_timeout = self.MEDIA_SESSION_IDLE_TIMEOUT
+
+        now = time.monotonic()
+        reaped = 0
+
+        for dc_id in list(self.media_session_pools):
+            lock = self._media_sessions_locks.setdefault(dc_id, asyncio.Lock())
+
+            async with lock:
+                pool = self.media_session_pools.get(dc_id) or []
+                keep = []
+
+                for session in pool:
+                    if session.results or now - session.last_used < idle_timeout:
+                        keep.append(session)
+                        continue
+
+                    try:
+                        await session.stop()
+                    except Exception:
+                        log.exception("Error stopping idle media session")
+
+                    reaped += 1
+
+                if keep:
+                    self.media_session_pools[dc_id] = keep
+                else:
+                    self.media_session_pools.pop(dc_id, None)
+
+        if reaped:
+            log.info("Reaped %s idle media session(s)", reaped)
+
+        return reaped
 
     async def authorize(self) -> User:
         if self.bot_token:
             return await self.sign_in_bot(self.bot_token)
 
-        print(rf"_ _ _ _____ _    ____ ____ ____ ")
-        print(rf"| | | | ____| |  | ___| ___) ___)")
-        print(rf"| | | |  _| | |__| |__| |__ | |__ ")
-        print(rf"| |_| | |___|____|____|____)|____)")
-        print(rf" \___/|_____|                     ")
+        print(rf"$$\      $$\            $$$$$$\                                   ")
+        print(rf"$$ | $\  $$ |          $$  __$$\                                  ")
+        print(rf"$$ |$$$\ $$ |$$$$$$$$\ $$ /  \__| $$$$$$\  $$$$$$\  $$$$$$\$$$$\  ")
+        print(rf"$$ $$ $$\$$ |\____$$  |$$ |$$$$\ $$  __$$\ \____$$\ $$  _$$  _$$\ ")
+        print(rf"$$$$  _$$$$ |  $$$$ _/ $$ |\_$$ |$$ |  \__|$$$$$$$ |$$ / $$ / $$ |")
+        print(rf"$$$  / \$$$ | $$  _/   $$ |  $$ |$$ |     $$  __$$ |$$ | $$ | $$ |")
+        print(rf"$$  /   \$$ |$$$$$$$$\ \$$$$$$  |$$ |     \$$$$$$$ |$$ | $$ | $$ |")
+        print(rf"\__/     \__|\________| \______/ \__|      \_______|\__| \__| \__|")
         print(f"  wzgram v{__version__}")
         print()
 
@@ -851,7 +1045,10 @@ class Client(Methods):
         return is_min
 
     async def handle_updates(self, updates):
+        # the datetime is what callers read; the watchdog measures a duration and
+        # a host clock that steps backwards must not stall it for the step
         self.last_update_time = datetime.now()
+        self._last_update_monotonic = time.monotonic()
 
         if isinstance(updates, (raw.types.Updates, raw.types.UpdatesCombined)):
             is_min = any((
@@ -914,7 +1111,7 @@ class Client(Methods):
                                 users.update({u.id: u for u in diff.users})
                                 chats.update({c.id: c for c in diff.chats})
 
-                self.dispatcher.updates_queue.put_nowait((update, users, chats))
+                await self.dispatcher.enqueue_update(update, users, chats)
         elif isinstance(updates, (raw.types.UpdateShortMessage, raw.types.UpdateShortChatMessage)):
             await self.storage.update_state(
                 (
@@ -935,7 +1132,7 @@ class Client(Methods):
             )
 
             if diff.new_messages:
-                self.dispatcher.updates_queue.put_nowait((
+                await self.dispatcher.enqueue_update(
                     raw.types.UpdateNewMessage(
                         message=diff.new_messages[0],
                         pts=updates.pts,
@@ -943,12 +1140,12 @@ class Client(Methods):
                     ),
                     {u.id: u for u in diff.users},
                     {c.id: c for c in diff.chats}
-                ))
+                )
             else:
                 if diff.other_updates:  # The other_updates list can be empty
-                    self.dispatcher.updates_queue.put_nowait((diff.other_updates[0], {}, {}))
+                    await self.dispatcher.enqueue_update(diff.other_updates[0], {}, {})
         elif isinstance(updates, raw.types.UpdateShort):
-            self.dispatcher.updates_queue.put_nowait((updates.update, {}, {}))
+            await self.dispatcher.enqueue_update(updates.update, {}, {})
         elif isinstance(updates, raw.types.UpdatesTooLong):
             log.info(updates)
 
@@ -1009,6 +1206,11 @@ class Client(Methods):
                             if confirm.lower() == "y":
                                 await self.storage.api_id(value)
                                 break
+                        except EOFError:
+                            raise AttributeError(
+                                "This session predates the stored api_id and there is "
+                                "no terminal to read one from. Pass api_id to Client()."
+                            ) from None
                         except Exception as e:
                             print(e)
 
@@ -1242,6 +1444,7 @@ class Client(Methods):
                 needs_pool = pool_size >= 1
                 if needs_pool:
                     pool_task = asyncio.ensure_future(self._get_media_session_pool(dc_id, pool_size))
+                    pool_task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
                 session = await self.get_session(dc_id, is_media=True)
 
@@ -1251,23 +1454,24 @@ class Client(Methods):
                         offset=offset_bytes,
                         limit=chunk_size
                     ),
+                    timeout=Session.MEDIA_WAIT_TIMEOUT,
                     sleep_threshold=30
                 )
 
                 if isinstance(r, raw.types.upload.File):
                     first_chunk = r.bytes
+                    r = None
                     yield first_chunk
                     current += 1
                     offset_bytes += chunk_size
-                    if _write_file is not None and file_size > 0:
+                    if _write_file is not None:
                         _write_file.seek(0)
                         _write_file.write(first_chunk)
 
-                    if (
-                        not first_chunk
-                        or len(first_chunk) < chunk_size
-                        or current >= total
-                    ):
+                    first_len = len(first_chunk)
+                    first_chunk = None
+
+                    if not first_len or first_len < chunk_size or current >= total:
                         return
 
                     # Sequential fallback when file size is unknown
@@ -1279,12 +1483,15 @@ class Client(Methods):
                                     offset=offset_bytes,
                                     limit=chunk_size,
                                 ),
+                                timeout=Session.MEDIA_WAIT_TIMEOUT,
                                 sleep_threshold=30,
                             )
                             chunk = r.bytes
                             if not chunk:
                                 return
                             yield chunk
+                            if _write_file is not None:
+                                _write_file.write(chunk)
                             current += 1
                             offset_bytes += chunk_size
 
@@ -1310,9 +1517,10 @@ class Client(Methods):
                         work.put_nowait(offset_bytes + i * chunk_size)
 
                     _write_mode = _write_file is not None and file_size > 0
+                    data_ready = asyncio.Event()
+                    buffer_slots = ReadAhead(self.read_ahead_slots)
                     if not _write_mode:
                         received = {}
-                        data_ready = asyncio.Event()
                     else:
                         _write_fd = _write_file.fileno()
                     _done_count = 0
@@ -1325,33 +1533,47 @@ class Client(Methods):
                     async def _worker(session):
                         nonlocal _done_count, _last_rate_adj, _fast_window
                         while True:
+                            await buffer_slots.acquire()
+
                             try:
                                 offset = work.get_nowait()
                             except asyncio.QueueEmpty:
+                                buffer_slots.release()
                                 return
 
-                            await _getfile_rate.acquire()
-                            t0 = time.monotonic()
-                            r = await session.invoke(
-                                raw.functions.upload.GetFile(
-                                    location=location,
-                                    offset=offset,
-                                    limit=chunk_size,
-                                ),
-                                sleep_threshold=30,
-                            )
+                            try:
+                                await _getfile_rate.acquire()
+                                t0 = time.monotonic()
+                                r = await session.invoke(
+                                    raw.functions.upload.GetFile(
+                                        location=location,
+                                        offset=offset,
+                                        limit=chunk_size,
+                                    ),
+                                    timeout=Session.MEDIA_WAIT_TIMEOUT,
+                                    sleep_threshold=30,
+                                )
+                            except BaseException:
+                                buffer_slots.release()
+                                raise
+
                             chunk_data = r.bytes
+                            r = None
                             t1 = time.monotonic()
 
                             if _write_mode:
-                                os.pwrite(_write_fd, chunk_data, offset)
+                                write_at(_write_fd, chunk_data, offset)
+                                buffer_slots.release()
                             else:
                                 received[offset] = chunk_data
-                                data_ready.set()
 
                             _done_count += 1
+                            data_ready.set()
 
-                            if len(chunk_data) < chunk_size:
+                            chunk_len = len(chunk_data)
+                            chunk_data = None
+
+                            if chunk_len < chunk_size:
                                 return
 
                             elapsed = t1 - t0
@@ -1373,6 +1595,9 @@ class Client(Methods):
                         asyncio.ensure_future(_worker(pool[i % n_sessions]))
                         for i in range(total_workers)
                     ]
+
+                    for t in tasks:
+                        t.add_done_callback(lambda _: data_ready.set())
 
                     _progress_task = None
                     if progress:
@@ -1409,18 +1634,24 @@ class Client(Methods):
                                 if _done_count >= _total_chunks:
                                     return
                                 for t in tasks:
-                                    if t.done():
+                                    if t.done() and not t.cancelled():
                                         exc = t.exception()
-                                        if exc and not isinstance(exc, asyncio.CancelledError):
+                                        if exc is not None:
                                             raise exc
-                                await asyncio.sleep(0.5)
+                                if all(t.done() for t in tasks):
+                                    return
+                                try:
+                                    await asyncio.wait_for(data_ready.wait(), 0.5)
+                                except asyncio.TimeoutError:
+                                    pass
+                                data_ready.clear()
                                 yield b""
                             else:
                                 while offset_bytes not in received:
                                     for t in tasks:
-                                        if t.done():
+                                        if t.done() and not t.cancelled():
                                             exc = t.exception()
-                                            if exc and not isinstance(exc, asyncio.CancelledError):
+                                            if exc is not None:
                                                 raise exc
                                     if all(t.done() for t in tasks):
                                         return
@@ -1428,6 +1659,7 @@ class Client(Methods):
                                     data_ready.clear()
 
                                 chunk = received.pop(offset_bytes)
+                                buffer_slots.release()
                                 yield chunk
                                 current += 1
                                 offset_bytes += chunk_size
@@ -1440,11 +1672,15 @@ class Client(Methods):
                         for t in tasks:
                             if not t.done():
                                 t.cancel()
+                        buffer_slots.release_all()
 
                 elif isinstance(r, raw.types.upload.FileCdnRedirect):
 
-                    cdn_session = await self.get_session(dc_id, is_cdn=True, temporary=True)
+                    cdn_session = await self.get_session(
+                        r.dc_id, is_media=True, is_cdn=True, temporary=True
+                    )
                     _cdn_rate = TokenBucket(rate=dl_rate, burst=dl_burst)
+                    _report_tasks = set()
 
                     try:
                         while True:
@@ -1454,7 +1690,8 @@ class Client(Methods):
                                     file_token=r.file_token,
                                     offset=offset_bytes,
                                     limit=chunk_size
-                                )
+                                ),
+                                timeout=Session.MEDIA_WAIT_TIMEOUT
                             )
 
                             if isinstance(r2, raw.types.upload.CdnFileReuploadNeeded):
@@ -1526,13 +1763,16 @@ class Client(Methods):
                                         except Exception as e:
                                             log.warning(f"CDN download progress callback error: {e}")
 
-                                    asyncio.ensure_future(report())
+                                    _t = asyncio.ensure_future(report())
+                                    _report_tasks.add(_t)
+                                    _t.add_done_callback(_report_tasks.discard)
 
                             if len(chunk) < chunk_size or current >= total:
                                 break
-                    except Exception:
-                        raise
                     finally:
+                        for _t in list(_report_tasks):
+                            if not _t.done():
+                                _t.cancel()
                         await cdn_session.stop()
             except Exception:
                 raise
@@ -1606,109 +1846,131 @@ class Client(Methods):
         if not temporary and sessions.get(dc_id):
             return sessions[dc_id]
 
-        if not server_address or not port:
-            dc_option = await self.get_dc_option(dc_id, is_media=is_media, ipv6=self.ipv6, is_cdn=is_cdn)
+        # Concurrent exports for one DC invalidate each other: AUTH_BYTES_INVALID.
+        lock = self._session_locks.setdefault((dc_id, bool(is_media)), asyncio.Lock())
 
-            server_address = server_address or dc_option.ip_address
-            port = port or dc_option.port
+        async with lock:
+            if not temporary and sessions.get(dc_id):
+                return sessions[dc_id]
 
-        if is_media:
-            auth_key = (await self.get_session(dc_id)).auth_key
-        else:
-            if not is_current_dc:
-                auth_key = await Auth(
-                    self,
-                    dc_id,
-                    await self.storage.test_mode(),
-                    server_address=server_address,
-                    port=port
-                ).create()
+            if not server_address or not port:
+                dc_option = await self.get_dc_option(dc_id, is_media=is_media, ipv6=self.ipv6, is_cdn=is_cdn)
+
+                server_address = server_address or dc_option.ip_address
+                port = port or dc_option.port
+
+            if is_cdn:
+                async with self._session_creation_gate:
+                    auth_key = await Auth(
+                        self,
+                        dc_id,
+                        await self.storage.test_mode(),
+                        server_address=server_address,
+                        port=port
+                    ).create()
+                export_authorization = False
+            elif is_media:
+                auth_key = (await self.get_session(dc_id)).auth_key
+                export_authorization = False
             else:
-                auth_key = await self.storage.auth_key()
+                if not is_current_dc:
+                    async with self._session_creation_gate:
+                        auth_key = await Auth(
+                            self,
+                            dc_id,
+                            await self.storage.test_mode(),
+                            server_address=server_address,
+                            port=port
+                        ).create()
+                else:
+                    auth_key = await self.storage.auth_key()
 
-        session = Session(
-            self,
-            dc_id,
-            auth_key,
-            await self.storage.test_mode(),
-            is_media=is_media,
-            server_address=server_address,
-            port=port,
-            crypto_executor=self.crypto_executor,
-        )
+            session = Session(
+                self,
+                dc_id,
+                auth_key,
+                await self.storage.test_mode(),
+                is_media=is_media,
+                is_cdn=is_cdn,
+                server_address=server_address,
+                port=port,
+                crypto_executor=self.crypto_executor,
+            )
 
-        if not temporary:
-            sessions[dc_id] = session
+            async with self._session_creation_gate:
+                await session.start(max_attempts=Session.MAX_RETRIES)
 
-        await session.start()
-
-        if not is_current_dc and export_authorization:
-            for _ in range(3):
-                exported_auth = await self.invoke(
-                    raw.functions.auth.ExportAuthorization(
-                        dc_id=dc_id
-                    )
-                )
-
-                try:
-                    await session.invoke(
-                        raw.functions.auth.ImportAuthorization(
-                            id=exported_auth.id,
-                            bytes=exported_auth.bytes
+            if not is_current_dc and export_authorization:
+                for _ in range(3):
+                    exported_auth = await self.invoke(
+                        raw.functions.auth.ExportAuthorization(
+                            dc_id=dc_id
                         )
                     )
-                except AuthBytesInvalid:
-                    continue
+
+                    try:
+                        await session.invoke(
+                            raw.functions.auth.ImportAuthorization(
+                                id=exported_auth.id,
+                                bytes=exported_auth.bytes
+                            )
+                        )
+                    except AuthBytesInvalid:
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        break
                 else:
-                    break
-            else:
-                await session.stop()
-                raise AuthBytesInvalid
+                    await session.stop()
+                    raise AuthBytesInvalid
 
-        return session
+            if not temporary:
+                sessions[dc_id] = session
 
-    async def _make_media_session(self, dc_id: int) -> "Session":
-        auth_key = (
-            await self.storage.auth_key()
-            if dc_id == await self.storage.dc_id()
-            else await Auth(self, dc_id, await self.storage.test_mode()).create()
-        )
+            return session
+
+    async def _make_media_session(
+        self,
+        dc_id: int,
+        auth_key: bytes,
+        server_address: Optional[str] = None,
+        port: Optional[int] = None
+    ) -> "Session":
         session = Session(
             self, dc_id, auth_key, await self.storage.test_mode(), is_media=True,
+            server_address=server_address, port=port,
             crypto_executor=self.crypto_executor,
         )
-        await session.start()
-        if dc_id != await self.storage.dc_id():
-            for _ in range(3):
-                exported_auth = await self.invoke(
-                    raw.functions.auth.ExportAuthorization(dc_id=dc_id)
-                )
-                try:
-                    await session.invoke(
-                        raw.functions.auth.ImportAuthorization(
-                            id=exported_auth.id, bytes=exported_auth.bytes
-                        )
-                    )
-                except AuthBytesInvalid:
-                    continue
-                else:
-                    break
-            else:
-                await session.stop()
-                raise AuthBytesInvalid
+        await session.start(max_attempts=Session.MAX_RETRIES)
         return session
 
     async def _get_media_session_pool(self, dc_id: int, n: int) -> list:
         lock = self._media_sessions_locks.setdefault(dc_id, asyncio.Lock())
         async with lock:
-            pool = self.media_session_pools.get(dc_id, [])
-            pool = [s for s in pool if s.is_started.is_set()]
+            pool = []
+
+            for session in self.media_session_pools.get(dc_id, []):
+                if session.is_started.is_set() or session.is_restarting:
+                    pool.append(session)
+                else:
+                    # dropping it here puts it out of the reaper's reach, and its
+                    # socket, ping task and receive task outlive the client
+                    utils.run_in_background(session.stop(), self.loop)
+
             needed = n - len(pool)
             if needed > 0:
-                sessions = await asyncio.gather(
-                    *(self._make_media_session(dc_id) for _ in range(needed))
-                )
-                pool.extend(sessions)
+                media = await self.get_session(dc_id, is_media=True)
+
+                while needed > 0:
+                    chunk = min(needed, 3)
+                    async with self._session_creation_gate:
+                        pool.extend(await asyncio.gather(*(
+                            self._make_media_session(
+                                dc_id, media.auth_key, media.server_address, media.port
+                            )
+                            for _ in range(chunk)
+                        )))
+                    needed -= chunk
             self.media_session_pools[dc_id] = pool
             return list(pool)
 
@@ -1807,12 +2069,7 @@ class Client(Methods):
 
     @property
     def server_time(self) -> float:
-        return time.time() + self._server_time_offset
-
-    def _set_server_time(self, msg_id: int):
-        server_ts = msg_id / float(2**32)
-        self._server_time_offset = server_ts - time.time()
-        log.info(f"Time synced: offset={self._server_time_offset:.3f}s, server_time={utils.timestamp_to_datetime(server_ts)}")
+        return MsgId.now()
 
     def guess_mime_type(self, filename: Union[str, BytesIO]) -> Optional[str]:
         if isinstance(filename, BytesIO):

@@ -35,6 +35,7 @@ from pyrogram.errors import (
 from pyrogram.parser import Parser
 from pyrogram.parser import utils as parser_utils
 
+from ..listeners.listener import UNSET
 from ..object import Object
 from ..update import Update
 
@@ -62,6 +63,22 @@ class Str(str):
 
     def __getitem__(self, item) -> str:
         return parser_utils.remove_surrogates(parser_utils.add_surrogates(self)[item])
+
+
+def _parse_reply_markup(reply_markup: "raw.base.ReplyMarkup"):
+    if isinstance(reply_markup, raw.types.ReplyKeyboardForceReply):
+        return types.ForceReply.read(reply_markup)
+
+    if isinstance(reply_markup, raw.types.ReplyKeyboardMarkup):
+        return types.ReplyKeyboardMarkup.read(reply_markup)
+
+    if isinstance(reply_markup, raw.types.ReplyInlineMarkup):
+        return types.InlineKeyboardMarkup.read(reply_markup)
+
+    if isinstance(reply_markup, raw.types.ReplyKeyboardHide):
+        return types.ReplyKeyboardRemove.read(reply_markup)
+
+    return None
 
 
 class Message(Object, Update):
@@ -622,6 +639,18 @@ class Message(Object, Update):
 
         content (``str``, *property*):
             The text or caption content of the message.
+
+        community_chat_added (:obj:`~pyrogram.types.CommunityChatAdded`, *optional*):
+            Service message: a chat was added to the community.
+
+        community_chat_removed (:obj:`~pyrogram.types.CommunityChatRemoved`, *optional*):
+            Service message: a chat was removed from the community.
+
+        scheduled (``bool``, *optional*):
+            True, if the message is a scheduled message that has not been sent yet.
+
+        from_scheduled (``bool``, *optional*):
+            True, if the message was sent by a scheduled message that has now fired.
     """
     # TODO: Migrate media-related params into a MessageContent class (breaking change)
     def __init__(
@@ -1005,8 +1034,14 @@ class Message(Object, Update):
                     users.update({i.id: i for i in r})
 
         from_user = types.User._parse(client, users.get(from_id or peer_id))
-        sender_chat = types.Chat._parse(client, message, users, chats, is_chat=False) if not from_user else None
         chat = types.Chat._parse(client, message, users, chats, is_chat=True)
+
+        if from_user:
+            sender_chat = None
+        elif (from_id or peer_id) == (peer_id or from_id):
+            sender_chat = chat
+        else:
+            sender_chat = types.Chat._parse(client, message, users, chats, is_chat=False)
 
         action = message.action
 
@@ -1506,8 +1541,14 @@ class Message(Object, Update):
                     users.update({i.id: i for i in r})
 
         from_user = types.User._parse(client, users.get(from_id or peer_id))
-        sender_chat = types.Chat._parse(client, message, users, chats, is_chat=False) if not from_user else None
         chat = types.Chat._parse(client, message, users, chats, is_chat=True)
+
+        if from_user:
+            sender_chat = None
+        elif (from_id or peer_id) == (peer_id or from_id):
+            sender_chat = chat
+        else:
+            sender_chat = types.Chat._parse(client, message, users, chats, is_chat=False)
 
         entities = types.List(
             filter(
@@ -1684,19 +1725,7 @@ class Message(Object, Update):
             message.invert_media
         )
 
-        reply_markup = message.reply_markup
-
-        if reply_markup:
-            if isinstance(reply_markup, raw.types.ReplyKeyboardForceReply):
-                reply_markup = types.ForceReply.read(reply_markup)
-            elif isinstance(reply_markup, raw.types.ReplyKeyboardMarkup):
-                reply_markup = types.ReplyKeyboardMarkup.read(reply_markup)
-            elif isinstance(reply_markup, raw.types.ReplyInlineMarkup):
-                reply_markup = types.InlineKeyboardMarkup.read(reply_markup)
-            elif isinstance(reply_markup, raw.types.ReplyKeyboardHide):
-                reply_markup = types.ReplyKeyboardRemove.read(reply_markup)
-            else:
-                reply_markup = None
+        reply_markup = _parse_reply_markup(message.reply_markup)
 
         reactions = types.MessageReactions._parse(client, message.reactions, users, chats)
 
@@ -2012,11 +2041,7 @@ class Message(Object, Update):
                 )
             )
 
-            reply_markup = None
-            if message.reply_markup:
-                reply_markup, _, _ = await types.ReplyMarkup._parse(
-                    client, message.reply_markup, users
-                )
+            reply_markup = _parse_reply_markup(message.reply_markup)
 
             return Message(
                 id=message.id,
@@ -3687,7 +3712,7 @@ class Message(Object, Update):
         allow_paid_broadcast: Optional[bool] = None,
         direct_messages_topic_id: Optional[int] = None,
         suggested_post_parameters: Optional["types.SuggestedPostParameters"] = None,
-        subscription_expiration_date: Optional[int] = None,
+        subscription_period: Optional[int] = None,
         reply_markup: Optional[
             Union[
                 "types.InlineKeyboardMarkup",
@@ -3799,8 +3824,8 @@ class Message(Object, Update):
             suggested_post_parameters (:obj:`~pyrogram.types.SuggestedPostParameters`, *optional*):
                 Information about the suggested post.
 
-            subscription_expiration_date (``int``, *optional*):
-                Expiration date of the subscription, in Unix time.
+            subscription_period (``int``, *optional*):
+                Duration of the subscription, in seconds.
                 Currently the only allowed subscription period is 30*24*60*60 (1 month).
                 For recurring payments only.
 
@@ -3863,7 +3888,7 @@ class Message(Object, Update):
             allow_paid_broadcast=allow_paid_broadcast,
             direct_messages_topic_id=direct_messages_topic_id,
             suggested_post_parameters=suggested_post_parameters,
-            subscription_expiration_date=subscription_expiration_date,
+            subscription_period=subscription_period,
             reply_markup=reply_markup,
             caption=caption,
             parse_mode=parse_mode,
@@ -3901,7 +3926,7 @@ class Message(Object, Update):
         allow_paid_broadcast: Optional[bool] = None,
         direct_messages_topic_id: Optional[int] = None,
         suggested_post_parameters: Optional["types.SuggestedPostParameters"] = None,
-        subscription_expiration_date: Optional[int] = None,
+        subscription_period: Optional[int] = None,
         reply_markup: Optional[
             Union[
                 "types.InlineKeyboardMarkup",
@@ -4012,8 +4037,8 @@ class Message(Object, Update):
             suggested_post_parameters (:obj:`~pyrogram.types.SuggestedPostParameters`, *optional*):
                 Information about the suggested post.
 
-            subscription_expiration_date (``int``, *optional*):
-                Expiration date of the subscription, in Unix time.
+            subscription_period (``int``, *optional*):
+                Duration of the subscription, in seconds.
                 Currently the only allowed subscription period is 30*24*60*60 (1 month).
                 For recurring payments only.
 
@@ -4071,7 +4096,7 @@ class Message(Object, Update):
             allow_paid_broadcast=allow_paid_broadcast,
             direct_messages_topic_id=direct_messages_topic_id,
             suggested_post_parameters=suggested_post_parameters,
-            subscription_expiration_date=subscription_expiration_date,
+            subscription_period=subscription_period,
             reply_markup=reply_markup,
             caption=caption,
             parse_mode=parse_mode,
@@ -8074,11 +8099,7 @@ class Message(Object, Update):
             direct_messages_topic_id=direct_messages_topic_id,
             reply_parameters=reply_parameters,
             paid_message_star_count=paid_message_star_count,
-
             reply_to_message_id=reply_to_message_id,
-            quote_text=quote_text,
-            parse_mode=parse_mode,
-            quote_entities=quote_entities,
         )
 
     async def answer_inline_bot_result(
@@ -8740,6 +8761,9 @@ class Message(Object, Update):
         business_connection_id: Optional[str] = None,
         allow_paid_broadcast: Optional[bool] = None,
         paid_message_star_count: Optional[int] = None,
+        direct_messages_topic_id: Optional[int] = None,
+        effect_id: Optional[int] = None,
+        suggested_post_parameters: Optional["types.SuggestedPostParameters"] = None,
         reply_markup: Optional[Union[
             "types.InlineKeyboardMarkup",
             "types.ReplyKeyboardMarkup",
@@ -8834,6 +8858,15 @@ class Message(Object, Update):
             quote_entities (List of :obj:`~pyrogram.types.MessageEntity`):
                 Special entities like usernames, URLs, bot commands, etc. that appear in the quote text.
 
+            direct_messages_topic_id (``int``, *optional*):
+                Unique identifier of the direct messages topic to copy into.
+
+            effect_id (``int``, *optional*):
+                Unique identifier of the message effect to add to the message.
+
+            suggested_post_parameters (:obj:`~pyrogram.types.SuggestedPostParameters`, *optional*):
+                Parameters of the suggested post.
+
         Returns:
             :obj:`~pyrogram.types.Message`: On success, the copied message is returned.
 
@@ -8872,6 +8905,9 @@ class Message(Object, Update):
                 business_connection_id=business_connection_id,
                 allow_paid_broadcast=allow_paid_broadcast,
                 paid_message_star_count=paid_message_star_count,
+                direct_messages_topic_id=direct_messages_topic_id,
+                effect_id=effect_id,
+                suggested_post_parameters=suggested_post_parameters,
                 reply_markup=self.reply_markup if reply_markup is object else reply_markup
             )
         elif self.media:
@@ -8893,6 +8929,8 @@ class Message(Object, Update):
                 business_connection_id=business_connection_id,
                 allow_paid_broadcast=allow_paid_broadcast,
                 paid_message_star_count=paid_message_star_count,
+                direct_messages_topic_id=direct_messages_topic_id,
+                suggested_post_parameters=suggested_post_parameters,
                 reply_markup=self.reply_markup if reply_markup is object else reply_markup
             )
 
@@ -8922,6 +8960,8 @@ class Message(Object, Update):
                     protect_content=self.has_protected_content if protect_content is None else protect_content,
                     allow_paid_broadcast=allow_paid_broadcast,
                     paid_message_star_count=paid_message_star_count,
+                    direct_messages_topic_id=direct_messages_topic_id,
+                    suggested_post_parameters=suggested_post_parameters,
                     reply_parameters=reply_parameters,
                     reply_markup=self.reply_markup if reply_markup is object else reply_markup,
                     video_cover=video_cover if video_cover is not None else self.video.video_cover.file_id if self.video.video_cover else None,
@@ -8949,6 +8989,9 @@ class Message(Object, Update):
                     schedule_date=schedule_date,
                     allow_paid_broadcast=allow_paid_broadcast,
                     paid_message_star_count=paid_message_star_count,
+                    direct_messages_topic_id=direct_messages_topic_id,
+                    effect_id=effect_id,
+                    suggested_post_parameters=suggested_post_parameters,
                     business_connection_id=business_connection_id
                 )
             elif self.location:
@@ -8962,6 +9005,9 @@ class Message(Object, Update):
                     schedule_date=schedule_date,
                     allow_paid_broadcast=allow_paid_broadcast,
                     paid_message_star_count=paid_message_star_count,
+                    direct_messages_topic_id=direct_messages_topic_id,
+                    effect_id=effect_id,
+                    suggested_post_parameters=suggested_post_parameters,
                     business_connection_id=business_connection_id
                 )
             elif self.venue:
@@ -8979,6 +9025,9 @@ class Message(Object, Update):
                     schedule_date=schedule_date,
                     allow_paid_broadcast=allow_paid_broadcast,
                     paid_message_star_count=paid_message_star_count,
+                    direct_messages_topic_id=direct_messages_topic_id,
+                    effect_id=effect_id,
+                    suggested_post_parameters=suggested_post_parameters,
                     business_connection_id=business_connection_id
                 )
             elif self.poll:
@@ -9004,6 +9053,9 @@ class Message(Object, Update):
                     schedule_date=schedule_date,
                     allow_paid_broadcast=allow_paid_broadcast,
                     paid_message_star_count=paid_message_star_count,
+                    direct_messages_topic_id=direct_messages_topic_id,
+                    effect_id=effect_id,
+                    suggested_post_parameters=suggested_post_parameters,
                 )
             elif self.game:
                 return await self._client.send_game(
@@ -9113,14 +9165,7 @@ class Message(Object, Update):
             show_caption_above_media=show_caption_above_media,
             allow_paid_broadcast=allow_paid_broadcast,
             paid_message_star_count=paid_message_star_count,
-
             reply_to_message_id=reply_to_message_id,
-            reply_to_chat_id=reply_to_chat_id,
-            reply_to_story_id=reply_to_story_id,
-            quote_text=quote_text,
-            parse_mode=parse_mode,
-            quote_entities=quote_entities,
-            quote_offset=quote_offset,
         )
 
     async def delete(self, revoke: bool = True):
@@ -9312,10 +9357,7 @@ class Message(Object, Update):
                     direct_messages_topic_id=self.direct_messages_topic_id,
                 )
             elif button.user_id:
-                return await self._client.get_chat(
-                    button.user_id,
-                    force_full=False
-                )
+                return await self._client.get_chat(button.user_id)
             elif button.switch_inline_query:
                 return button.switch_inline_query
             elif button.switch_inline_query_current_chat:
@@ -9628,11 +9670,11 @@ class Message(Object, Update):
         )
 
     async def summarize(self, translate_to_language_code: Optional[str] = None) -> "types.FormattedText":
-        """Shortcut for method :obj:`~pyrogram.Client.summarize_message` will automatically fill method attributes:
+        """Shortcut for method :obj:`~pyrogram.Client.summarize_text` will automatically fill method attributes:
 
-        * chat_id
-        * message_id
-        * translate_to_language_code
+        * peer
+        * id
+        * to_lang
 
         Parameters:
             translate_to_language_code (``str``, *optional*):
@@ -9655,9 +9697,63 @@ class Message(Object, Update):
         if translate_to_language_code is None:
             translate_to_language_code = self._client.lang_code
 
-        return await self._client.summarize_message(
-            chat_id=self.chat.id,
-            message_id=self.id,
-            translate_to_language_code=translate_to_language_code
+        return await self._client.summarize_text(
+            peer=self.chat.id,
+            id=self.id,
+            to_lang=translate_to_language_code
         )
+    async def wait_for_click(
+        self,
+        user_id=None,
+        timeout=UNSET,
+        filters=None,
+        alert=True
+    ):
+        """Bound method *wait_for_click* of :obj:`~pyrogram.types.Message`.
 
+        Use as a shortcut for:
+
+        .. code-block:: python
+
+            await client.listen(
+                listener_type=enums.ListenerTypes.CALLBACK_QUERY,
+                chat_id=message.chat.id,
+                message_id=message.id
+            )
+
+        Example:
+            .. code-block:: python
+
+                sent = await message.reply("Pick one", reply_markup=keyboard)
+                query = await sent.wait_for_click(timeout=60)
+
+        Parameters:
+            user_id (``int`` | ``str`` | List of ``int`` | ``str``, *optional*):
+                Only accept a click from this user.
+
+            timeout (``float``, *optional*):
+                Seconds to wait before raising ``ListenerTimeout``. Defaults to
+                the client's ``listener_timeout``.
+
+            filters (:obj:`~pyrogram.filters.Filter`, *optional*):
+                Extra filter the callback query has to pass.
+
+            alert (``bool`` | ``str``, *optional*):
+                Answer clicks coming from a user this listener does not expect.
+                Pass a string to set the text.
+
+        Returns:
+            :obj:`~pyrogram.types.CallbackQuery`: The matching callback query.
+
+        Raises:
+            ListenerTimeout: In case nobody clicked in time.
+        """
+        return await self._client.listen(
+            filters=filters,
+            listener_type=enums.ListenerTypes.CALLBACK_QUERY,
+            timeout=timeout,
+            unallowed_click_alert=alert,
+            chat_id=self.chat.id,
+            user_id=user_id,
+            message_id=self.id
+        )

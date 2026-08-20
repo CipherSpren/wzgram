@@ -25,7 +25,6 @@ from typing import Union, Optional
 
 import pyrogram
 from pyrogram import raw
-from pyrogram import types
 
 
 class GetBotInfo:
@@ -33,7 +32,7 @@ class GetBotInfo:
         self: "pyrogram.Client",
         bot: Optional[Union[int, str]] = None,
         lang_code: str = "en",
-    ) -> "types.Message":
+    ) -> "raw.types.bots.BotInfo":
         """Get bot info (name, about, description).
 
         .. include:: /_includes/usable-by/users-bots.rst
@@ -43,7 +42,7 @@ class GetBotInfo:
             lang_code (str, *optional*): Language code for localized info
 
         Returns:
-            :obj:`~pyrogram.types.Message`
+            :obj:`~pyrogram.raw.types.bots.BotInfo`
 
         Example:
             .. code-block:: python
@@ -52,10 +51,10 @@ class GetBotInfo:
         """
 
         r = await self.invoke(
-            raw.functions.bots.getBotInfo(
+            raw.functions.bots.GetBotInfo(
                 bot=await self.resolve_peer(bot),
                 lang_code=lang_code,
             )
         )
 
-        return types.Message._parse(self, r)
+        return r

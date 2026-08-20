@@ -25,14 +25,13 @@ from typing import Union, Optional
 
 import pyrogram
 from pyrogram import raw
-from pyrogram import types
 
 
 class DeleteBusinessChatLink:
     async def delete_business_chat_link(
         self: "pyrogram.Client",
         slug: Optional[str] = None,
-    ) -> "types.Message":
+    ) -> bool:
         """Delete a business chat link by slug.
 
         .. include:: /_includes/usable-by/users.rst
@@ -41,7 +40,7 @@ class DeleteBusinessChatLink:
             slug (str): Unique slug of the chat link to delete
 
         Returns:
-            :obj:`~pyrogram.types.Message`
+            ``bool``: True on success.
 
         Example:
             .. code-block:: python
@@ -50,7 +49,9 @@ class DeleteBusinessChatLink:
         """
 
         r = await self.invoke(
-            raw.functions.account.deleteBusinessChatLink(
+            raw.functions.account.DeleteBusinessChatLink(
                 slug=slug,
             )
         )
+
+        return r
