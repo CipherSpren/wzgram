@@ -379,6 +379,13 @@ def pyrogram_api():
             delete_chat_history
             delete_direct_messages_chat_topic_history
             delete_ephemeral_message
+            get_welcome_messages
+            delete_welcome_message
+            delete_all_welcome_messages
+            edit_ephemeral_message_text
+            edit_ephemeral_message_caption
+            edit_ephemeral_message_media
+            edit_ephemeral_message_reply_markup
             delete_messages
             delete_participant_reaction
             delete_participant_reactions
@@ -608,6 +615,7 @@ def pyrogram_api():
             on_inline_query
             on_managed_bot
             on_message
+            on_message_generation_stopped
             on_message_reaction
             on_message_reaction_count
             on_poll
@@ -711,6 +719,7 @@ def pyrogram_api():
             ChatJoinResultSuccess
             Community
             CommunityChatAdded
+            CommunityChatJoined
             CommunityChatRemoved
             FailedToAddMember
             Link
@@ -721,6 +730,7 @@ def pyrogram_api():
         Messages & Media
             Message
             MessageEntity
+            MessageGenerationStopped
             Photo
             Thumbnail
             Audio
@@ -758,6 +768,7 @@ def pyrogram_api():
             ContactRegistered
             DirectMessagePriceChanged
             DirectMessagesTopic
+            EphemeralMessageParameters
             ExternalReplyInfo
             FactCheck
             FormattedText
@@ -813,6 +824,7 @@ def pyrogram_api():
             RestrictionReason
             RichBlock
             RichMessage
+            RichMessageButton
             RichText
             ScreenshotTaken
             StarAmount
@@ -865,10 +877,13 @@ def pyrogram_api():
             RichBlockAnimation
             RichBlockAudio
             RichBlockBlockQuotation
+            RichBlockButtons
             RichBlockCaption
             RichBlockCollage
             RichBlockDetails
             RichBlockDivider
+            RichBlockDocument
+            RichBlockExpandableBlockQuotation
             RichBlockFooter
             RichBlockList
             RichBlockListItem
@@ -890,6 +905,7 @@ def pyrogram_api():
             RichTextAnchorLink
             RichTextBankCardNumber
             RichTextBold
+            RichTextButton
             RichTextBotCommand
             RichTextCashtag
             RichTextCode
@@ -933,6 +949,7 @@ def pyrogram_api():
             InlineKeyboardMarkup
             InlineKeyboardButton
             CopyTextButton
+            DisabledButton
             SwitchInlineQueryChosenChat
             LoginUrl
             ForceReply
@@ -1054,9 +1071,12 @@ def pyrogram_api():
             InputRichBlockAnimation
             InputRichBlockAudio
             InputRichBlockBlockQuotation
+            InputRichBlockButtons
             InputRichBlockCollage
             InputRichBlockDetails
             InputRichBlockDivider
+            InputRichBlockDocument
+            InputRichBlockExpandableBlockQuotation
             InputRichBlockFooter
             InputRichBlockList
             InputRichBlockListItem
@@ -1094,9 +1114,11 @@ def pyrogram_api():
         """,
         enums="""
         Enums
+            BlockAlignment
             BlockList
             BusinessSchedule
             ButtonStyle
+            RichButtonStyle
             ChatAction
             ChatEventAction
             ChatJoinRequestQueryResult

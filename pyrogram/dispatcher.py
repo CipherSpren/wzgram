@@ -43,6 +43,7 @@ from pyrogram.handlers import (
     Handler,
     InlineQueryHandler,
     ManagedBotUpdatedHandler,
+    MessageGenerationStoppedHandler,
     MessageHandler,
     MessageReactionCountHandler,
     MessageReactionHandler,
@@ -78,6 +79,7 @@ from pyrogram.raw.types import (
     UpdateDeleteMessages,
     UpdateEditChannelMessage,
     UpdateEditEphemeralMessage,
+    UpdateEphemeralBotCallbackQuery,
     UpdateEditMessage,
     UpdateInlineBotCallbackQuery,
     UpdateManagedBot,
@@ -88,7 +90,10 @@ from pyrogram.raw.types import (
     UpdateNewMessage,
     UpdateNewScheduledMessage,
     UpdateStory,
+    UpdateChannelUserTyping,
+    UpdateChatUserTyping,
     UpdateUserStatus,
+    UpdateUserTyping,
 )
 
 log = logging.getLogger(__name__)
@@ -102,9 +107,11 @@ class Dispatcher:
     NEW_MESSAGE_UPDATES = (UpdateNewMessage, UpdateNewChannelMessage, UpdateNewScheduledMessage, UpdateNewEphemeralMessage)
     EDIT_MESSAGE_UPDATES = (UpdateEditMessage, UpdateEditChannelMessage, UpdateEditEphemeralMessage)
     DELETE_MESSAGES_UPDATES = (UpdateDeleteMessages, UpdateDeleteChannelMessages, UpdateDeleteEphemeralMessages)
-    CALLBACK_QUERY_UPDATES = (UpdateBotCallbackQuery, UpdateInlineBotCallbackQuery, UpdateBusinessBotCallbackQuery)
+    CALLBACK_QUERY_UPDATES = (UpdateBotCallbackQuery, UpdateInlineBotCallbackQuery, UpdateBusinessBotCallbackQuery,
+                              UpdateEphemeralBotCallbackQuery)
     CHAT_MEMBER_UPDATES = (UpdateChatParticipant, UpdateChannelParticipant)
     USER_STATUS_UPDATES = (UpdateUserStatus,)
+    TYPING_UPDATES = (UpdateUserTyping, UpdateChatUserTyping, UpdateChannelUserTyping)
     BOT_INLINE_QUERY_UPDATES = (UpdateBotInlineQuery,)
     POLL_UPDATES = (UpdateMessagePoll, UpdateMessagePollVote)
     CHOSEN_INLINE_RESULT_UPDATES = (UpdateBotInlineSend,)
@@ -180,6 +187,18 @@ class Dispatcher:
                 await pyrogram.types.CallbackQuery._parse(self.client, update, users, chats),
                 CallbackQueryHandler
             )
+
+        async def message_generation_stopped_parser(update, users, chats):
+            stopped = pyrogram.types.MessageGenerationStopped._parse(
+                self.client, update, users, chats
+            )
+
+            # typing updates carry every SendMessageAction, and only the stop one has a
+            # handler; type(None) matches nothing, so the rest fall through to raw handlers
+            if stopped is None:
+                return None, type(None)
+
+            return stopped, MessageGenerationStoppedHandler
 
         async def user_status_parser(update, users, chats):
             return (
@@ -311,6 +330,7 @@ class Dispatcher:
             Dispatcher.DELETE_MESSAGES_UPDATES: deleted_messages_parser,
             Dispatcher.CALLBACK_QUERY_UPDATES: callback_query_parser,
             Dispatcher.USER_STATUS_UPDATES: user_status_parser,
+            Dispatcher.TYPING_UPDATES: message_generation_stopped_parser,
             Dispatcher.BOT_INLINE_QUERY_UPDATES: inline_query_parser,
             Dispatcher.POLL_UPDATES: poll_parser,
             Dispatcher.CHOSEN_INLINE_RESULT_UPDATES: chosen_inline_result_parser,
@@ -472,12 +492,14 @@ class Dispatcher:
                 self.groups[group].append(handler)
 
         try:
-            utils.run_in_background(fn(), asyncio.get_running_loop())
+            loop = asyncio.get_running_loop()
         except RuntimeError:
             if group not in self.groups:
                 self.groups[group] = []
                 self.groups = OrderedDict(sorted(self.groups.items()))
             self.groups[group].append(handler)
+        else:
+            utils.run_in_background(fn(), loop)
 
     def remove_handler(self, handler: Handler, group: int):
         async def fn():
@@ -493,12 +515,14 @@ class Dispatcher:
                     del self.groups[group]
 
         try:
-            utils.run_in_background(fn(), asyncio.get_running_loop())
+            loop = asyncio.get_running_loop()
         except RuntimeError:
             if group in self.groups:
                 self.groups[group].remove(handler)
                 if not self.groups[group]:
                     del self.groups[group]
+        else:
+            utils.run_in_background(fn(), loop)
 
     def park(self, lock=None) -> bool:
         """Register that a handler worker is about to block on a listener.

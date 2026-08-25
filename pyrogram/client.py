@@ -322,8 +322,12 @@ class Client(Methods):
             Text shown by *unallowed_click_alert*.
 
         storage_engine (:obj:`~pyrogram.storage.Storage`, *optional*):
-            Pass an instance of your own implementation of session storage engine.
-            Useful when you want to store your session in databases like Mongo, Redis, etc.
+            Where to keep the session. Defaults to a SQLite file named after the client.
+            Pass :obj:`~pyrogram.storage.MongoStorage` or :obj:`~pyrogram.storage.RedisStorage`
+            to keep it in a database, :obj:`~pyrogram.storage.HybridStorage` to put a local
+            cache in front of one, or your own :obj:`~pyrogram.storage.Storage` subclass.
+            An explicit engine takes precedence over *session_string*, which is loaded into
+            it rather than replacing it.
 
         client_platform (:obj:`~pyrogram.enums.ClientPlatform`, *optional*):
             The platform where this client is running.
@@ -521,7 +525,16 @@ class Client(Methods):
 
         self.storage: Storage
 
-        if self.session_string:
+        if isinstance(storage_engine, Storage):
+            # An explicit engine wins over session_string and in_memory: those
+            # used to be checked first and silently replaced it with SQLite.
+            # A session string is loaded *into* it instead, which every engine
+            # can do now that load_session_string lives on the base class.
+            self.storage = storage_engine
+
+            if self.session_string:
+                self.storage.session_string = self.session_string
+        elif self.session_string:
             self.storage = SQLiteStorage(
                 self.name,
                 workdir=self.workdir,
@@ -530,8 +543,6 @@ class Client(Methods):
             )
         elif self.in_memory:
             self.storage = SQLiteStorage(self.name, workdir=self.workdir, in_memory=True)
-        elif isinstance(storage_engine, Storage):
-            self.storage = storage_engine
         else:
             self.storage = SQLiteStorage(self.name, workdir=self.workdir)
 
@@ -965,7 +976,7 @@ class Client(Methods):
         Example:
             .. code-block:: python
 
-                from pyrogram import enums
+                from wzgram import enums
 
                 # Default combined mode: Markdown + HTML
                 await app.send_message("me", "1. **markdown** and <i>html</i>")
@@ -1059,6 +1070,10 @@ class Client(Methods):
             users = {u.id: u for u in updates.users}
             chats = {c.id: c for c in updates.chats}
 
+            # one write per peer per batch rather than per update: each costs a
+            # thread hand-off into aiosqlite, and only the highest pts matters
+            pending_states = {}
+
             for update in updates.updates:
                 channel_id = getattr(
                     getattr(
@@ -1072,15 +1087,11 @@ class Client(Methods):
                 pts_count = getattr(update, "pts_count", None)
 
                 if pts:
-                    await self.storage.update_state(
-                        (
-                            utils.get_channel_id(channel_id) if channel_id else 0,
-                            pts,
-                            None,
-                            updates.date,
-                            updates.seq
-                        )
-                    )
+                    key = utils.get_channel_id(channel_id) if channel_id else 0
+                    known = pending_states.get(key)
+
+                    if known is None or pts > known[1]:
+                        pending_states[key] = (key, pts, None, updates.date, updates.seq)
 
                 if isinstance(update, raw.types.UpdateChannelTooLong):
                     log.info(update)
@@ -1112,6 +1123,9 @@ class Client(Methods):
                                 chats.update({c.id: c for c in diff.chats})
 
                 await self.dispatcher.enqueue_update(update, users, chats)
+
+            for state in pending_states.values():
+                await self.storage.update_state(state)
         elif isinstance(updates, (raw.types.UpdateShortMessage, raw.types.UpdateShortChatMessage)):
             await self.storage.update_state(
                 (
@@ -1162,7 +1176,7 @@ class Client(Methods):
         if session_empty:
             if not self.api_id or not self.api_hash:
                 raise AttributeError("The API key is required for new authorizations. "
-                                     "More info: https://docs.pyrogram.org/start/auth")
+                                     "More info: https://rjriajul.github.io/wzgram/start/auth")
 
             await self.storage.api_id(self.api_id)
 

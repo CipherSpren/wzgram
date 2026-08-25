@@ -37,12 +37,12 @@ class ImportContacts:
                 The contact list to be added
 
         Returns:
-            :obj:`types.contacts.ImportedContacts`
+            :obj:`~pyrogram.raw.types.contacts.ImportedContacts`
 
         Example:
             .. code-block:: python
 
-                from pyrogram.types import InputPhoneContact
+                from wzgram.types import InputPhoneContact
 
                 await app.import_contacts([
                     InputPhoneContact("+1-123-456-7890", "Foo"),

@@ -9,8 +9,8 @@
 # Absent Bot API types and methods are deliberate and are not listed here.
 # Regenerate the pending section with: uv run poe botapi-refresh
 
-version: 'Bot API 10.2'
-release_date: 'July 14, 2026'
+version: 'Bot API 10.3'
+release_date: 'August 24, 2026'
 
 types:
   supported:
@@ -56,13 +56,16 @@ types:
     - ChosenInlineResult
     - Community
     - CommunityChatAdded
+    - CommunityChatJoined
     - CommunityChatRemoved
     - Contact
     - CopyTextButton
     - Dice
     - DirectMessagePriceChanged
     - DirectMessagesTopic
+    - DisabledButton
     - Document
+    - EphemeralMessageParameters
     - ExternalReplyInfo
     - ForceReply
     - ForumTopic
@@ -125,9 +128,12 @@ types:
     - InputRichBlockAnimation
     - InputRichBlockAudio
     - InputRichBlockBlockQuotation
+    - InputRichBlockButtons
     - InputRichBlockCollage
     - InputRichBlockDetails
     - InputRichBlockDivider
+    - InputRichBlockDocument
+    - InputRichBlockExpandableBlockQuotation
     - InputRichBlockFooter
     - InputRichBlockList
     - InputRichBlockListItem
@@ -169,6 +175,7 @@ types:
     - MenuButtonWebApp
     - Message
     - MessageEntity
+    - MessageGenerationStopped
     - MessageOrigin
     - MessageOriginChannel
     - MessageOriginChat
@@ -197,10 +204,13 @@ types:
     - RichBlockAnimation
     - RichBlockAudio
     - RichBlockBlockQuotation
+    - RichBlockButtons
     - RichBlockCaption
     - RichBlockCollage
     - RichBlockDetails
     - RichBlockDivider
+    - RichBlockDocument
+    - RichBlockExpandableBlockQuotation
     - RichBlockFooter
     - RichBlockList
     - RichBlockListItem
@@ -218,12 +228,14 @@ types:
     - RichBlockVideo
     - RichBlockVoiceNote
     - RichMessage
+    - RichMessageButton
     - RichText
     - RichTextAnchor
     - RichTextAnchorLink
     - RichTextBankCardNumber
     - RichTextBold
     - RichTextBotCommand
+    - RichTextButton
     - RichTextCashtag
     - RichTextCode
     - RichTextCustomEmoji
@@ -308,6 +320,10 @@ methods:
     - deleteMessageReaction
     - deleteMessages
     - editChatInviteLink
+    - editEphemeralMessageCaption
+    - editEphemeralMessageMedia
+    - editEphemeralMessageReplyMarkup
+    - editEphemeralMessageText
     - editForumTopic
     - editMessageCaption
     - editMessageChecklist

@@ -1,13 +1,13 @@
 Bound Methods
 =============
 
-Some Pyrogram types define what are called bound methods. Bound methods are functions attached to a type which are
+Some wzgram types define what are called bound methods. Bound methods are functions attached to a type which are
 accessed via an instance of that type. They make it even easier to call specific methods by automatically inferring
 some of the required arguments.
 
 .. code-block:: python
 
-    from pyrogram import Client
+    from wzgram import Client
 
     app = Client("my_account")
 

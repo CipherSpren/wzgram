@@ -13,11 +13,20 @@ Text Formatting
 .. role:: strike-italic
     :class: strike-italic
 
-Pyrogram uses a custom Markdown dialect for text formatting which adds some unique features that make writing styled
+wzgram uses a custom Markdown dialect for text formatting which adds some unique features that make writing styled
 texts easier in both Markdown and HTML. You can send sophisticated text messages and media captions using a
 variety of decorations that can also be nested in order to combine multiple styles together.
 
 `The official BOT API style HTML formatting is also supported <https://core.telegram.org/bots/api#html-style>`__
+
+.. tip::
+
+    The default parse mode, :obj:`~pyrogram.enums.ParseMode.DEFAULT`, understands **both**
+    syntaxes in one message, so ``**bold**`` and ``<blockquote>`` can sit side by side.
+    :obj:`~pyrogram.enums.ParseMode.MARKDOWN` and :obj:`~pyrogram.enums.ParseMode.HTML` are
+    the strict modes: each escapes the other's syntax, so a tag inside strict Markdown is
+    sent as literal text. :obj:`~pyrogram.enums.ParseMode.DISABLED` sends everything as
+    written.
 
 
 -----
@@ -26,7 +35,7 @@ Basic Styles
 ------------
 
 When formatting your messages, you can choose between Markdown-style, HTML-style or both (default). The following is a
-list of the basic styles currently supported by Pyrogram.
+list of the basic styles currently supported by wzgram.
 
 - **bold**
 - *italic*
@@ -86,7 +95,7 @@ To strictly use this mode, pass :obj:`~pyrogram.enums.ParseMode.HTML` to the *pa
 
 .. code-block:: python
 
-    from pyrogram.enums import ParseMode
+    from wzgram.enums import ParseMode
 
     await app.send_message(
         chat_id="me",
@@ -148,6 +157,13 @@ Markdown Style
 To strictly use this mode, pass :obj:`~pyrogram.enums.ParseMode.MARKDOWN` to the *parse_mode* parameter when using
 :meth:`~pyrogram.Client.send_message`. Use the following syntax in your message:
 
+.. note::
+
+    There is no Markdown syntax for **blockquotes** or **custom emoji**. A leading ``>`` is
+    sent as a literal ``>``, and ``![emoji](tg://emoji?id=...)`` parses as a text link. Use
+    ``<blockquote>`` and ``<tg-emoji>`` instead — in HTML mode, or mixed into the default
+    combined mode.
+
 .. code-block:: text
 
     **bold**
@@ -157,23 +173,6 @@ To strictly use this mode, pass :obj:`~pyrogram.enums.ParseMode.MARKDOWN` to the
     --underline--
 
     ~~strike~~
-
-    >blockquote
-
-    |>escaped blockquote 
-
-    >Fist line of multi line blockquote 
-    >Block quotation continued
-    >Block quotation continued
-    >Block quotation continued
-    >The last line of the block quotation
-
-    **>The expandable block quotation started right after the previous block quotation
-    >It is separated from the previous block quotation by expandable syntax 
-    >Expandable block quotation continued
-    >Hidden by default part of the expandable block quotation started
-    >Expandable block quotation continued
-    >The last line of the expandable block quotation with the expandability mark||
 
     `inline fixed-width code`
 
@@ -194,7 +193,7 @@ To strictly use this mode, pass :obj:`~pyrogram.enums.ParseMode.MARKDOWN` to the
 
 .. code-block:: python
 
-    from pyrogram.enums import ParseMode
+    from wzgram.enums import ParseMode
 
     await app.send_message(
         chat_id="me",
@@ -205,29 +204,11 @@ To strictly use this mode, pass :obj:`~pyrogram.enums.ParseMode.MARKDOWN` to the
             "~~strike~~, "
             "||spoiler||, "
             "[URL](https://rjriajul.github.io/wzgram/), "
-            "![👍](tg://emoji?id=5469770542288478598)"
             "`code`, "
             "```py"
             "for i in range(10):\n"
             "    print(i)"
             "```\n"
-
-            ">blockquote\n"
-
-            "|>escaped blockquote\n"
-
-            ">Fist line of multi line blockquote\n"
-            ">Block quotation continued\n"
-            ">Block quotation continued\n"
-            ">Block quotation continued\n"
-            ">The last line of the block quotation"
-
-            "**>The expandable block quotation started right after the previous block quotation\n"
-            ">It is separated from the previous block quotation by expandable syntax\n"
-            ">Expandable block quotation continued\n"
-            ">Hidden by default part of the expandable block quotation started\n"
-            ">Expandable block quotation continued\n"
-            ">The last line of the expandable block quotation with the expandability mark||"
 
         ),
         parse_mode=ParseMode.MARKDOWN
@@ -253,7 +234,7 @@ If you don't like this behaviour you can always choose to only enable either Mar
 
 .. code-block:: python
 
-    from pyrogram.enums import ParseMode
+    from wzgram.enums import ParseMode
 
     await app.send_message(chat_id="me", text="**bold**, <i>italic</i>", parse_mode=ParseMode.MARKDOWN)
     await app.send_message(chat_id="me", text="**bold**, <i>italic</i>", parse_mode=ParseMode.HTML)
@@ -269,7 +250,7 @@ The text will be sent as-is.
 
 .. code-block:: python
 
-    from pyrogram.enums import ParseMode
+    from wzgram.enums import ParseMode
 
     await app.send_message(chat_id="me", text="**bold**, <i>italic</i>", parse_mode=ParseMode.DISABLED)
 
@@ -356,7 +337,7 @@ with raw HTML or Markdown text, which is parsed server-side:
 
 .. code-block:: python
 
-    from pyrogram.types import InputRichMessage
+    from wzgram.types import InputRichMessage
 
     rich = InputRichMessage(
         html="<b>bold</b> <tg-emoji emoji-id=5469770542288478598>👍</tg-emoji>"

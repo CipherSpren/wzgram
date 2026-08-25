@@ -59,7 +59,7 @@ class CallbackQuery(Object, Update):
 
         matches (List of regex Matches, *optional*):
             A list containing all `Match Objects <https://docs.python.org/3/library/re.html#match-objects>`_ that match
-            the data of this callback query. Only applicable when using :obj:`Filters.regex <pyrogram.Filters.regex>`.
+            the data of this callback query. Only applicable when using :meth:`filters.regex() <pyrogram.filters.regex>`.
 
         reply_to_message (:obj:`~pyrogram.types.Message`, *optional*):
             The message the callback button belongs to is a reply to this message.
@@ -121,6 +121,8 @@ class CallbackQuery(Object, Update):
 
             if callback_query.reply_to_message:
                 reply_to_message = await types.Message._parse(client, callback_query.reply_to_message, users, chats)
+        elif isinstance(callback_query, raw.types.UpdateEphemeralBotCallbackQuery):
+            message = await types.Message._parse(client, callback_query.message, users, chats)
 
         # Try to decode callback query data into string. If that fails, fallback to bytes instead of decoding by
         # ignoring/replacing errors, this way, button clicks will still work.
@@ -134,7 +136,11 @@ class CallbackQuery(Object, Update):
             from_user=types.User._parse(client, users[callback_query.user_id]),
             message=message,
             inline_message_id=inline_message_id,
-            chat_instance=str(callback_query.chat_instance),
+            chat_instance=(
+                str(callback_query.chat_instance)
+                if callback_query.chat_instance is not None
+                else None
+            ),
             data=data,
             game_short_name=getattr(callback_query, "game_short_name", None),
             client=client,

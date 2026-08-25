@@ -10,8 +10,8 @@ It uses the :meth:`~pyrogram.Client.on_inline_query` decorator to register an :o
 
 .. code-block:: python
 
-    from pyrogram import Client
-    from pyrogram.types import (InlineQueryResultArticle, InputTextMessageContent,
+    from wzgram import Client
+    from wzgram.types import (InlineQueryResultArticle, InputTextMessageContent,
                                 InlineKeyboardMarkup, InlineKeyboardButton)
 
     app = Client("my_bot", bot_token="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11")
@@ -24,10 +24,10 @@ It uses the :meth:`~pyrogram.Client.on_inline_query` decorator to register an :o
                 InlineQueryResultArticle(
                     title="Installation",
                     input_message_content=InputTextMessageContent(
-                        "Here's how to install **Pyrogram**"
+                        "Here's how to install **wzgram**"
                     ),
                     url="https://rjriajul.github.io/wzgram/intro/install",
-                    description="How to install Pyrogram",
+                    description="How to install wzgram",
                     reply_markup=InlineKeyboardMarkup(
                         [
                             [InlineKeyboardButton(
@@ -40,10 +40,10 @@ It uses the :meth:`~pyrogram.Client.on_inline_query` decorator to register an :o
                 InlineQueryResultArticle(
                     title="Usage",
                     input_message_content=InputTextMessageContent(
-                        "Here's how to use **Pyrogram**"
+                        "Here's how to use **wzgram**"
                     ),
                     url="https://rjriajul.github.io/wzgram/start/invoking",
-                    description="How to use Pyrogram",
+                    description="How to use wzgram",
                     reply_markup=InlineKeyboardMarkup(
                         [
                             [InlineKeyboardButton(

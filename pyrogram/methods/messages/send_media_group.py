@@ -104,7 +104,7 @@ class SendMediaGroup:
         Example:
             .. code-block:: python
 
-                from pyrogram.types import InputMediaPhoto, InputMediaVideo
+                from wzgram.types import InputMediaPhoto, InputMediaVideo
 
                 await app.send_media_group(
                     "me",
@@ -118,6 +118,8 @@ class SendMediaGroup:
 
         if kwargs:
             raise TypeError(f"Got unexpected keyword argument(s): {set(kwargs)}")
+
+        if reply_parameters is None:
             if reply_to_message_id is not None:
                 reply_parameters = types.ReplyParameters(
                     message_id=reply_to_message_id,

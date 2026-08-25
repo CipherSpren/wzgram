@@ -1,17 +1,20 @@
 from datetime import datetime
-from typing import Union, Optional
+from typing import List, Union, Optional
 
 import pyrogram
 from pyrogram import raw, utils, enums
 from pyrogram import types
+
+from ..ephemeral.as_ephemeral import as_ephemeral
 
 
 class SendRichMessage:
     async def send_rich_message(
         self: "pyrogram.Client",
         chat_id: Union[int, str],
-        rich_text: str,
+        rich_text: Union[str, "types.InputRichMessage"],
         parse_mode: Optional["enums.ParseMode"] = None,
+        media: Optional[List["types.InputRichMessageMedia"]] = None,
         disable_web_page_preview: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         effect_id: Optional[int] = None,
@@ -37,6 +40,7 @@ class SendRichMessage:
         suggested_post_parameters: Optional["types.SuggestedPostParameters"] = None,
         show_caption_above_media: Optional[bool] = None,
         business_connection_id: Optional[str] = None,
+        ephemeral_message_parameters: Optional["types.EphemeralMessageParameters"] = None,
     ) -> "types.Message":
         """Send a rich formatted message.
 
@@ -46,13 +50,20 @@ class SendRichMessage:
             chat_id (``int`` | ``str``):
                 Unique identifier (int) or username (str) of the target chat.
 
-            rich_text (``str``):
-                Rich text (Markdown or HTML) to render a styled message.
+            rich_text (``str`` | :obj:`~pyrogram.types.InputRichMessage`):
+                Rich text (Markdown or HTML) to render a styled message, or a whole
+                :obj:`~pyrogram.types.InputRichMessage` describing it.
                 See `rich message formatting options <https://core.telegram.org/bots/api#rich-message-formatting-options>`__ for details.
 
             parse_mode (:obj:`~pyrogram.enums.ParseMode`, *optional*):
                 By default, texts are parsed using both Markdown and HTML styles.
                 You can combine both syntaxes together.
+                Ignored when *rich_text* is an :obj:`~pyrogram.types.InputRichMessage`.
+
+            media (List of :obj:`~pyrogram.types.InputRichMessageMedia`, *optional*):
+                Media the text refers to through ``tg://photo?id=``, ``tg://video?id=``
+                or ``tg://audio?id=`` links.
+                Ignored when *rich_text* is an :obj:`~pyrogram.types.InputRichMessage`.
 
             disable_web_page_preview (``bool``, *optional*):
                 Disables link previews for links in this message.
@@ -114,6 +125,15 @@ class SendRichMessage:
             show_caption_above_media (``bool``, *optional*):
                 Pass True, if the caption must be shown above the message media.
 
+            ephemeral_message_parameters (:obj:`~pyrogram.types.EphemeralMessageParameters`, *optional*):
+                Send the message as an ephemeral message, visible only to the user it
+                names and absent from the chat's history, rather than as an ordinary one.
+                The ephemeral RPC has no field for *silent*, *background*, *clear_draft*,
+                *schedule_date*, *repeat_period*, *send_as*, *effect_id*,
+                *quick_reply_shortcut*, *allow_paid_broadcast*,
+                *paid_message_star_count*, *suggested_post_parameters* or
+                *update_stickersets_order*; any of those that is set is logged and
+                dropped.
         Returns:
             :obj:`~pyrogram.types.Message`: On success, the sent rich message is returned.
 
@@ -123,19 +143,27 @@ class SendRichMessage:
                 # Send a rich formatted message
                 await app.send_rich_message(chat_id, "<b>Hello</b> <i>world</i>!")
         """
-        parse_mode = parse_mode or self.parse_mode
-
-        if parse_mode == enums.ParseMode.MARKDOWN:
-            rich_message = raw.types.InputRichMessageMarkdown(
-                markdown=rich_text,
-            )
+        if isinstance(rich_text, types.InputRichMessage):
+            rich_message = rich_text.write()
         else:
-            rich_message = raw.types.InputRichMessageHTML(
-                html=rich_text,
-            )
+            parse_mode = parse_mode or self.parse_mode
+            files = types.InputRichMessage(
+                html="_", media=media
+            ).write_files() if media else None
+
+            if parse_mode == enums.ParseMode.MARKDOWN:
+                rich_message = raw.types.InputRichMessageMarkdown(
+                    markdown=rich_text,
+                    files=files,
+                )
+            else:
+                rich_message = raw.types.InputRichMessageHTML(
+                    html=rich_text,
+                    files=files,
+                )
 
         r = await self.invoke(
-            raw.functions.messages.SendMessage(
+            await as_ephemeral(self, ephemeral_message_parameters, raw.functions.messages.SendMessage(
                 peer=await self.resolve_peer(chat_id),
                 message="",
                 random_id=self.rnd_id(),
@@ -162,7 +190,7 @@ class SendRichMessage:
                 allow_paid_stars=paid_message_star_count if paid_message_star_count is not None else None,
                 suggested_post=suggested_post_parameters.write() if suggested_post_parameters else None,
                 invert_media=show_caption_above_media,
-            ),
+            )),
             sleep_threshold=60,
             business_connection_id=business_connection_id,
         )
@@ -170,7 +198,8 @@ class SendRichMessage:
         for i in r.updates:
             if isinstance(i, (raw.types.UpdateNewMessage,
                               raw.types.UpdateNewChannelMessage,
-                              raw.types.UpdateNewScheduledMessage)):
+                              raw.types.UpdateNewScheduledMessage,
+                              raw.types.UpdateNewEphemeralMessage)):
                 return await types.Message._parse(
                     self, i.message,
                     {i.id: i for i in r.users},
