@@ -191,6 +191,31 @@ class TestWritesReachTheBackend:
         assert 1 in backend.peers
 
 
+class TestDelete:
+    async def test_a_queued_write_is_not_replayed_after_a_purge(self, tmp_path):
+        class Slow(FakeRemote):
+            async def _save_session(self, fields):
+                await asyncio.sleep(0.2)
+                return await super()._save_session(fields)
+
+        backend = Slow("purge")
+        storage = HybridStorage("purge", backend=backend, workdir=tmp_path, flush_timeout=1)
+
+        await storage.open()
+        await storage.auth_key(b"k" * 256)
+        await asyncio.sleep(0)
+
+        await storage.delete()
+
+        assert backend.session is None
+
+        await asyncio.sleep(0.5)
+
+        assert backend.session is None, "a queued write put the session back after the purge"
+
+        await storage.close()
+
+
 class TestBackendFailures:
     async def test_write_failure_does_not_reach_the_caller(self, hybrid):
         storage, backend = hybrid
@@ -279,6 +304,38 @@ class TestWriterTask:
         from pyrogram.utils import _background_tasks
 
         assert storage._writer in _background_tasks
+
+    async def test_a_write_lost_on_close_is_counted_and_logged(self, tmp_path, caplog):
+        class Slow(FakeRemote):
+            async def _save_session(self, fields):
+                await asyncio.sleep(5)
+                return await super()._save_session(fields)
+
+        backend = Slow("lost")
+        storage = HybridStorage("lost", backend=backend, workdir=tmp_path, flush_timeout=0.2)
+
+        await storage.open()
+        await storage.auth_key(b"k" * 256)
+        await asyncio.sleep(0)
+
+        with caplog.at_level("WARNING"):
+            await storage.close()
+
+        assert backend.session.get("auth_key") is None, "the write did not land"
+        assert storage.dropped_writes == 1
+        assert "still had 1 writes queued" in caplog.text
+        assert "lost them" in caplog.text
+
+    async def test_a_clean_close_reports_no_loss(self, tmp_path):
+        backend = FakeRemote("clean")
+        storage = HybridStorage("clean", backend=backend, workdir=tmp_path, flush_timeout=2)
+
+        await storage.open()
+        await storage.auth_key(b"k" * 256)
+        await storage.close()
+
+        assert backend.session["auth_key"] == b"k" * 256
+        assert storage.dropped_writes == 0
 
     async def test_writer_stops_on_close(self, tmp_path):
         backend = FakeRemote("stop")

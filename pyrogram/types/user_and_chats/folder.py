@@ -298,10 +298,6 @@ class Folder(Object):
         Returns:
             True on success.
         """
-        if name is not None:
-            name, entities = (await utils.parse_text_entities(self, name, parse_mode, entities)).values()
-            entities = entities or []
-
         return await self._client.edit_folder(
             folder_id=self.id,
             name=name if name is not None else self.name,
@@ -310,7 +306,7 @@ class Folder(Object):
             animate_custom_emoji=animate_custom_emoji if animate_custom_emoji is not None else self.animate_custom_emoji,
             icon=icon if icon is not None else self.icon,
             color=color if color is not None else self.color,
-            pinned_chats=[i.id for i in self.included_chats or []] if pinned_chats is None else pinned_chats,
+            pinned_chats=[i.id for i in self.pinned_chats or []] if pinned_chats is None else pinned_chats,
             included_chats=[i.id for i in self.included_chats or []] if included_chats is None else included_chats,
             excluded_chats=[i.id for i in self.excluded_chats or []] if excluded_chats is None else excluded_chats,
             exclude_muted=exclude_muted if exclude_muted is not None else self.exclude_muted,
@@ -495,7 +491,7 @@ class Folder(Object):
             :obj:`~pyrogram.types.FolderInviteLink`: On success, information about the invite link is returned.
         """
         if chat_ids is None:
-            chat_ids = [i.id for i in self.included_chats]
+            chat_ids = [i.id for i in self.included_chats or []]
 
         return await self._client.create_folder_invite_link(
             chat_folder_id=self.id,

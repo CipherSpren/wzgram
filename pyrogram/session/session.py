@@ -161,12 +161,13 @@ class Session:
                 self._teardown_started = False
                 self._skew_breaches = 0
                 self._msg_id_floor = 0
-                self.connection = Connection(
+                self.connection = self.client.connection_factory(
                     self.dc_id,
                     self.test_mode,
                     self.client.ipv6,
                     self.client.proxy,
                     self.is_media,
+                    protocol_factory=self.client.protocol_factory,
                     crypto_executor=self.crypto_executor,
                     loop=self.loop,
                     server_address=self.server_address,
@@ -195,6 +196,11 @@ class Session:
                                     lang_code=self.client.lang_code,
                                     lang_pack="",
                                     query=raw.functions.help.GetConfig(),
+                                    params=(
+                                        utils.obj_to_jsonvalue(self.client.init_connection_params)
+                                        if self.client.init_connection_params
+                                        else None
+                                    ),
                                 )
                             ),
                             timeout=handshake_timeout
@@ -254,6 +260,12 @@ class Session:
         finally:
             self._start_active = False
             self._start_completed.set()
+
+        if self is self.client.session and callable(self.client.connect_handler):
+            try:
+                await self.client.connect_handler(self.client, self)
+            except (Exception, asyncio.CancelledError) as e:
+                log.exception(e)
 
     async def stop(self):
         self.is_started.clear()

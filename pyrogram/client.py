@@ -209,10 +209,10 @@ class Client(Methods):
             after which the server address will be updated (works both ways).
             Defaults to False (IPv4).
 
-        proxy (``dict`` | ``str``, *optional*):
+        proxy (``dict``, *optional*):
             The Proxy settings as dict.
-            E.g.: *dict(scheme="socks5", hostname="11.22.33.44", port=1234, username="user", password="pass")*
-            or *"http://11.22.33.44:1234"* or *"socks5://user:pass@11.22.33.44:1234"* or *"tg://user:pass@11.22.33.44:1234"*.
+            E.g.: *dict(scheme="socks5", hostname="11.22.33.44", port=1234, username="user", password="pass")*.
+            The *scheme* can be "socks4", "socks5" or "http" and defaults to "socks5".
             The *username* and *password* can be omitted if the proxy doesn't require authorization.
 
         test_mode (``bool``, *optional*):
@@ -430,7 +430,7 @@ class Client(Methods):
         lang_code: str = LANG_CODE,
         system_lang_code: str = SYSTEM_LANG_CODE,
         ipv6: Optional[bool] = False,
-        proxy: Optional[Union[dict, str]] = None,
+        proxy: Optional[dict] = None,
         test_mode: Optional[bool] = False,
         bot_token: Optional[str] = None,
         session_string: Optional[str] = None,
@@ -1800,7 +1800,8 @@ class Client(Methods):
         export_authorization: Optional[bool] = True,
         server_address: Optional[str] = None,
         port: Optional[int] = None,
-        temporary: Optional[bool] = False
+        temporary: Optional[bool] = False,
+        adopt_as_main: Optional[bool] = False
     ) -> "Session":
         """Get existing session or create a new one.
 
@@ -1832,6 +1833,10 @@ class Client(Methods):
             temporary (``bool``, *optional*):
                 Create temporary session instead of getting from storage.
                 Used only when uploading/downloading and don't forget to stop it.
+
+            adopt_as_main (``bool``, *optional*):
+                Pass True to make the new session the client's main one before it
+                connects, so a datacenter migration announces the new connection.
         """
         if not dc_id:
             dc_id = await self.storage.dc_id()
@@ -1910,6 +1915,9 @@ class Client(Methods):
                 port=port,
                 crypto_executor=self.crypto_executor,
             )
+
+            if adopt_as_main:
+                self.session = session
 
             async with self._session_creation_gate:
                 await session.start(max_attempts=Session.MAX_RETRIES)

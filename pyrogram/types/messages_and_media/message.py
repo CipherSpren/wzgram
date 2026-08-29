@@ -9749,14 +9749,7 @@ class Message(Object, Update):
 
         if is_inline:
             if button.callback_data:
-                return await self._client.request_callback_answer(
-                    chat_id=self.chat.id,
-                    message_id=self.id,
-                    callback_data=button.callback_data,
-                    timeout=timeout
-                )
-            elif button.requires_password:
-                if password is None:
+                if button.requires_password and password is None:
                     raise ValueError(
                         "This button requires a password"
                     )
@@ -9846,7 +9839,7 @@ class Message(Object, Update):
         return await self._client.send_reaction(
             chat_id=self.chat.id,
             message_id=self.id,
-
+            emoji=emoji,
             big=big,
             business_connection_id=self.business_connection_id
         )
