@@ -265,15 +265,36 @@ class InputRichBlockListItem(Object):
         self.has_checkbox = has_checkbox
         self.is_checked = is_checked
 
-    def write(self) -> "raw.base.PageListItem":
+    def write(
+        self, ordered: bool = False
+    ) -> Union["raw.base.PageListItem", "raw.base.PageListOrderedItem"]:
         if self.blocks:
+            blocks = [b.write() for b in self.blocks]
+
+            if ordered:
+                return raw.types.PageListOrderedItemBlocks(
+                    blocks=blocks,
+                    checkbox=self.has_checkbox,
+                    checked=self.is_checked
+                )
+
             return raw.types.PageListItemBlocks(
-                blocks=[b.write() for b in self.blocks],
+                blocks=blocks,
                 checkbox=self.has_checkbox,
                 checked=self.is_checked
             )
+
+        text = _to_rich_text(self.text or "")
+
+        if ordered:
+            return raw.types.PageListOrderedItemText(
+                text=text,
+                checkbox=self.has_checkbox,
+                checked=self.is_checked
+            )
+
         return raw.types.PageListItemText(
-            text=_to_rich_text(self.text or ""),
+            text=text,
             checkbox=self.has_checkbox,
             checked=self.is_checked
         )
@@ -303,7 +324,7 @@ class InputRichBlockList(InputRichBlock):
     def write(self) -> "raw.base.PageBlock":
         if self.ordered:
             return raw.types.PageBlockOrderedList(
-                items=[item.write() for item in self.items]
+                items=[item.write(ordered=True) for item in self.items]
             )
         return raw.types.PageBlockList(
             items=[item.write() for item in self.items]
@@ -920,14 +941,16 @@ class InputRichBlockVoiceNote(InputRichBlock):
 
 
 class InputRichBlockThinking(InputRichBlock):
-    """A thinking block (collapsible text that reveals after a bot's reasoning).
+    """A block with a "Thinking..." placeholder, corresponding to the custom HTML tag ``<tg-thinking>``.
 
-    This block is used to show the bot's reasoning process that was collapsed
-    or hidden behind a "thinking" indicator.
+    The block may be used only in :meth:`~pyrogram.Client.send_rich_message_draft`, therefore it
+    can't be received in messages.
+    See https://t.me/addemoji/AIActions for examples of custom emoji, which are recommended for usage in the block.
 
     Parameters:
         text (``str`` | :obj:`~pyrogram.raw.base.RichText`):
-            Text of the block (the reasoning content).
+            Text of the block.
+            See https://t.me/addemoji/AIActions for examples of custom emoji, which are recommended for usage in the block.
     """
 
     def __init__(

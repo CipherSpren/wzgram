@@ -18,14 +18,18 @@ class SendRichMessageDraft:
 
         When generating a rich message progressively (e.g. during AI response streaming),
         this method shows the user a typing indicator with the partial rich message content.
-        The block :obj:`~pyrogram.types.InputRichBlockThinking` may be used as a placeholder
-        while waiting for content to be generated.
+        The block :obj:`~pyrogram.types.InputRichBlockThinking` — or, in the *html* and
+        *markdown* forms, the custom tag ``<tg-thinking>Thinking...</tg-thinking>`` it
+        corresponds to — may be used as a placeholder while waiting for content to be
+        generated. Both are accepted only here, so they can't be received in messages.
 
         .. include:: /_includes/usable-by/bots.rst
 
         Parameters:
             chat_id (``int`` | ``str``):
-                Unique identifier (int) or username (str) of the target chat.
+                Unique identifier (int) or username (str) of the target **private** chat.
+                Drafts are streamed as a typing action and a group or channel refuses one
+                with ``TEXTDRAFT_PEER_INVALID``.
 
             draft_id (``int``):
                 Unique identifier of the draft; must be non-zero.
@@ -35,8 +39,9 @@ class SendRichMessageDraft:
 
             rich_message (:obj:`~pyrogram.types.InputRichMessage`):
                 The partial rich message to stream.
-                Use :obj:`~pyrogram.types.InputRichBlockThinking` as a placeholder
-                for content still being generated.
+                Use :obj:`~pyrogram.types.InputRichBlockThinking`, or the
+                ``<tg-thinking>Thinking...</tg-thinking>`` tag in *html* and *markdown*,
+                as a placeholder for content still being generated.
 
             message_thread_id (``int``, *optional*):
                 Unique identifier for a forum topic thread.
