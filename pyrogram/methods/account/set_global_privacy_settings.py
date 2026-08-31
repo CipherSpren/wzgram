@@ -101,16 +101,16 @@ class SetGlobalPrivacySettings:
             settings.keep_archived_folders = keep_chats_from_folders_archived
 
         if show_read_date is not None:
-            settings.hide_read_marks = show_read_date
+            settings.hide_read_marks = not show_read_date
 
         if allow_new_chats_from_unknown_users is not None:
-            settings.new_noncontact_peers_require_premium = allow_new_chats_from_unknown_users
+            settings.new_noncontact_peers_require_premium = not allow_new_chats_from_unknown_users
 
         if incoming_paid_message_star_count is not None:
             settings.noncontact_peers_paid_stars = incoming_paid_message_star_count
 
         if show_gift_button is not None:
-            settings.show_gift_button = show_gift_button
+            settings.display_gifts_button = show_gift_button
 
         if accepted_gift_types is not None:
             settings.disallowed_gifts = accepted_gift_types.write()

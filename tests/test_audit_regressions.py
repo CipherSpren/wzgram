@@ -1324,3 +1324,1594 @@ async def test_a_datacenter_migration_announces_the_new_connection(monkeypatch):
         "a datacenter migration stops the old session and opens a new one, so "
         f"on_connect has to run for the new datacenter; got {seen}"
     )
+
+
+async def test_a_saved_message_does_not_ask_for_a_direct_messages_topic():
+    """Saved Messages carries ``saved_peer_id`` to name the saved dialog a message
+    belongs to. A monoforum names its topic with the same field, and reports
+    ``ChatType.PRIVATE`` like any user chat, so the chat type alone cannot tell the
+    two apart: keying on it sends ``messages.GetSavedDialogsByID`` with a user as
+    ``parent_peer``, and Telegram answers PARENT_PEER_INVALID. Only a monoforum
+    sets ``is_direct_messages``.
+    """
+
+    from unittest.mock import Mock
+
+    from pyrogram import raw, types
+
+    asked = []
+
+    client = Mock()
+    client.me = Mock(id=7, is_bot=False, is_premium=False)
+    client.message_cache = {}
+    client.topic_cache = pyrogram.client.Cache(8)
+    client.parse_mode = None
+    client.fetch_topics = True
+
+    async def get_direct_messages_topics_by_id(chat_id, topic_ids):
+        asked.append((chat_id, topic_ids))
+        raise AssertionError("a user chat has no direct messages topic to fetch")
+
+    client.get_direct_messages_topics_by_id = get_direct_messages_topics_by_id
+
+    message = raw.types.Message(
+        id=1,
+        peer_id=raw.types.PeerUser(user_id=7),
+        from_id=raw.types.PeerUser(user_id=7),
+        saved_peer_id=raw.types.PeerUser(user_id=7),
+        date=1700000000,
+        restriction_reason=[],
+        entities=[],
+        message="saved",
+    )
+
+    users = {7: raw.types.User(
+        id=7, first_name="U", usernames=[], restriction_reason=[], access_hash=1, is_self=True
+    )}
+
+    parsed = await types.Message._parse(client, message, users, {})
+
+    assert not asked, (
+        "Saved Messages is a plain user chat, so parsing a message in it must not "
+        f"reach for a direct messages topic; asked {asked}"
+    )
+    assert parsed.topic is None
+
+
+async def test_get_users_survives_an_answer_the_server_left_short():
+    """``users.getUsers`` answers only for user peers, and drops whatever it will not
+    answer for rather than refusing: a channel id, or a user held by an access hash
+    the server no longer honours, comes back as a short vector. Indexing that for the
+    single-id form raised a bare ``IndexError`` naming nothing.
+    """
+
+    from pyrogram import raw
+    from pyrogram.methods.users.get_users import GetUsers
+
+    class _Client(GetUsers):
+        async def resolve_peer(self, peer_id):
+            if peer_id == "durov":
+                return raw.types.InputPeerChannel(channel_id=1, access_hash=1)
+
+            return raw.types.InputPeerUser(user_id=2, access_hash=1)
+
+        async def invoke(self, query):
+            # the server answers for the user peers only and drops the rest
+            return [
+                raw.types.User(
+                    id=p.user_id, first_name="U", usernames=[], restriction_reason=[],
+                    access_hash=1
+                )
+                for p in query.id
+                if isinstance(p, raw.types.InputPeerUser)
+            ]
+
+    client = _Client()
+
+    assert await client.get_users("durov") is None, (
+        "a peer the server declined to answer for is absent, not an IndexError"
+    )
+    assert (await client.get_users("someone")).id == 2, "a real user still parses"
+    assert [u.id for u in await client.get_users(["durov", "someone"])] == [2], (
+        "the iterable form still returns what came back, as it always has"
+    )
+
+
+async def test_a_monoforum_message_still_asks_for_its_direct_messages_topic():
+    """The other half of the pairing: a monoforum reports ``ChatType.PRIVATE`` like
+    any user chat, so telling the two apart by ``is_direct_messages`` has to keep
+    the monoforum fetching the topic it really does own.
+    """
+
+    from unittest.mock import Mock
+
+    from pyrogram import raw, types
+
+    asked = []
+
+    client = Mock()
+    client.me = Mock(id=7, is_bot=False, is_premium=False)
+    client.message_cache = {}
+    client.topic_cache = pyrogram.client.Cache(8)
+    client.parse_mode = None
+    client.fetch_topics = True
+
+    async def get_direct_messages_topics_by_id(chat_id, topic_ids):
+        asked.append((chat_id, topic_ids))
+        return None
+
+    client.get_direct_messages_topics_by_id = get_direct_messages_topics_by_id
+
+    channel = raw.types.Channel(
+        id=100, title="DM", photo=raw.types.ChatPhotoEmpty(), date=0, access_hash=1,
+        usernames=[], restriction_reason=[], monoforum=True, broadcast=False, megagroup=False
+    )
+
+    message = raw.types.Message(
+        id=1,
+        peer_id=raw.types.PeerChannel(channel_id=100),
+        from_id=raw.types.PeerUser(user_id=7),
+        saved_peer_id=raw.types.PeerUser(user_id=42),
+        date=1700000000,
+        restriction_reason=[],
+        entities=[],
+        message="m",
+    )
+
+    users = {7: raw.types.User(
+        id=7, first_name="U", usernames=[], restriction_reason=[], access_hash=1
+    )}
+
+    parsed = await types.Message._parse(client, message, users, {100: channel})
+
+    assert parsed.chat.is_direct_messages, "a monoforum is what marks a direct messages chat"
+    assert parsed.direct_messages_topic_id == 42
+    assert asked == [(parsed.chat.id, 42)], (
+        f"a monoforum still owns the topic its saved_peer_id names; asked {asked}"
+    )
+
+
+async def test_a_saved_channel_message_does_not_read_a_user_id_off_a_channel():
+    """``saved_peer_id`` in Saved Messages is whoever sent the message originally,
+    and that can be a channel, which carries no ``user_id`` to read.
+    """
+
+    from unittest.mock import Mock
+
+    from pyrogram import raw, types
+
+    client = Mock()
+    client.me = Mock(id=7, is_bot=False, is_premium=False)
+    client.message_cache = {}
+    client.topic_cache = pyrogram.client.Cache(8)
+    client.parse_mode = None
+    client.fetch_topics = True
+
+    message = raw.types.Message(
+        id=1,
+        peer_id=raw.types.PeerUser(user_id=7),
+        from_id=raw.types.PeerUser(user_id=7),
+        saved_peer_id=raw.types.PeerChannel(channel_id=555),
+        date=1700000000,
+        restriction_reason=[],
+        entities=[],
+        message="saved from a channel",
+    )
+
+    users = {7: raw.types.User(
+        id=7, first_name="U", usernames=[], restriction_reason=[], access_hash=1, is_self=True
+    )}
+
+    parsed = await types.Message._parse(client, message, users, {})
+
+    assert parsed.direct_messages_topic_id is None
+    assert parsed.topic is None
+
+
+def test_a_hidden_read_date_is_not_a_shown_one():
+    """``globalPrivacySettings`` carries the *negative* flags ``hide_read_marks`` and
+    ``new_noncontact_peers_require_premium``. Both were mapped straight onto the
+    positively named ``show_read_date`` and ``allow_new_chats_from_unknown_users``
+    with no negation, so every read reported the opposite of the truth, and both
+    errors fell on the permissive side. TDLib settles the polarity:
+    ``hide_read_marks_ = !show_read_date_``.
+    """
+
+    from pyrogram import raw, types
+
+    hidden = types.GlobalPrivacySettings._parse(
+        raw.types.GlobalPrivacySettings(
+            hide_read_marks=True,
+            new_noncontact_peers_require_premium=True,
+        )
+    )
+    assert hidden.show_read_date is False, "a hidden read date is not a shown one"
+    assert hidden.allow_new_chats_from_unknown_users is False, (
+        "requiring premium of non-contacts is not allowing them"
+    )
+
+    shown = types.GlobalPrivacySettings._parse(
+        raw.types.GlobalPrivacySettings(
+            hide_read_marks=False,
+            new_noncontact_peers_require_premium=False,
+        )
+    )
+    assert shown.show_read_date is True
+    assert shown.allow_new_chats_from_unknown_users is True
+
+    absent = types.GlobalPrivacySettings._parse(raw.types.GlobalPrivacySettings())
+    assert absent.show_read_date is True, "an unset hide flag means the date is shown"
+    assert absent.allow_new_chats_from_unknown_users is True
+
+    from io import BytesIO
+
+    written = types.GlobalPrivacySettings(
+        show_read_date=False, allow_new_chats_from_unknown_users=False
+    ).write()
+    assert written.hide_read_marks is True
+    assert written.new_noncontact_peers_require_premium is True
+
+    reread = types.GlobalPrivacySettings._parse(
+        raw.types.GlobalPrivacySettings.read(BytesIO(written.write()[4:]))
+    )
+    assert reread.show_read_date is False, "the round trip keeps what was asked for"
+    assert reread.allow_new_chats_from_unknown_users is False
+
+
+def test_an_unspecified_privacy_flag_is_not_a_restriction():
+    """``write()`` must not turn "the caller said nothing" into "hide it". A bare
+    ``not None`` would have set both restrictions on an object built with neither
+    field.
+    """
+
+    from pyrogram import types
+
+    written = types.GlobalPrivacySettings().write()
+
+    assert written.hide_read_marks is None, "saying nothing is not asking to hide"
+    assert written.new_noncontact_peers_require_premium is None
+
+
+async def test_asking_to_show_a_read_date_clears_the_hide_flag():
+    """The setter reads the live settings and writes back a modified copy, so the
+    negation has to happen there too, not only in the type.
+    """
+
+    from pyrogram import raw
+    from pyrogram.methods.account.set_global_privacy_settings import (
+        SetGlobalPrivacySettings,
+    )
+
+    sent = []
+
+    class _Client(SetGlobalPrivacySettings):
+        async def invoke(self, query):
+            if isinstance(query, raw.functions.account.GetGlobalPrivacySettings):
+                return raw.types.GlobalPrivacySettings(
+                    hide_read_marks=True,
+                    new_noncontact_peers_require_premium=True,
+                )
+
+            sent.append(query.settings)
+            return query.settings
+
+    client = _Client()
+
+    result = await client.set_global_privacy_settings(
+        show_read_date=True,
+        allow_new_chats_from_unknown_users=True,
+    )
+
+    assert sent[0].hide_read_marks is False, (
+        "asking to show the read date must clear the hide flag, not set it"
+    )
+    assert sent[0].new_noncontact_peers_require_premium is False, (
+        "allowing unknown users must clear the premium requirement"
+    )
+    assert result.show_read_date is True, "and the answer reads back the way it was asked"
+    assert result.allow_new_chats_from_unknown_users is True
+
+
+def _progress_client(chunks):
+    import asyncio as _asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tests.test_download_write import FakeClient
+
+    client = FakeClient(chunks)
+    client.loop = _asyncio.get_event_loop()
+    client.executor = ThreadPoolExecutor(1)
+
+    return client
+
+
+async def test_a_finished_download_says_it_finished(tmp_path):
+    """The progress callback was moved onto a task that polls every 0.5s and is
+    cancelled the moment the transfer ends, so a download could finish having
+    reported nothing at all, and none ever reported the final chunk. Measured
+    live, a 12 MB file produced between zero and two calls, the last of them
+    claiming 58%.
+    """
+
+    from tests.test_download_write import CHUNK, file_id
+
+    for label, chunks, file_size in (
+        ("shorter than one chunk", [b"x" * 2048], 2048),
+        ("exactly one chunk", [b"a" * CHUNK], CHUNK),
+        ("spilling past a chunk", [b"a" * CHUNK, b"b" * 4096], CHUNK + 4096),
+    ):
+        seen = []
+
+        async def note(current, total):
+            seen.append((current, total))
+
+        client = _progress_client(chunks)
+        await client.handle_download(
+            (file_id(), str(tmp_path), "out.bin", False, file_size, note, ())
+        )
+
+        assert seen, f"{label}: a download that transferred bytes reported none"
+        assert seen[-1] == (file_size, file_size), (
+            f"{label}: the last call must report the whole file, got {seen[-1]}"
+        )
+        assert all(c <= file_size for c, _ in seen), (
+            f"{label}: no call may claim more than the file holds"
+        )
+        assert seen == sorted(seen), f"{label}: progress must not go backwards"
+
+
+async def test_a_download_progress_callback_may_be_a_plain_function(tmp_path):
+    """The callback is documented as either kind, and the sync branch hands it to
+    the executor rather than awaiting it.
+    """
+
+    from tests.test_download_write import file_id
+
+    seen = []
+    client = _progress_client([b"x" * 4096])
+
+    await client.handle_download(
+        (file_id(), str(tmp_path), "out.bin", False, 4096,
+         lambda current, total: seen.append((current, total)), ())
+    )
+
+    assert seen[-1] == (4096, 4096), f"a plain function is called too, got {seen}"
+
+
+async def test_progress_args_reach_the_download_callback(tmp_path):
+    """``progress_args`` is appended to every call, and the reporter rewrite had to
+    keep passing it through.
+    """
+
+    from tests.test_download_write import file_id
+
+    seen = []
+
+    async def note(current, total, tag):
+        seen.append((current, total, tag))
+
+    client = _progress_client([b"x" * 4096])
+    await client.handle_download(
+        (file_id(), str(tmp_path), "out.bin", False, 4096, note, ("tag",))
+    )
+
+    assert seen[-1] == (4096, 4096, "tag")
+
+
+async def test_a_finished_upload_says_it_finished(tmp_path):
+    """The upload half of the same rewrite. It polled ``file_part``, which counts
+    parts handed to a worker rather than parts the server acknowledged, so it both
+    over-reported and stopped short of the end.
+    """
+
+    from types import SimpleNamespace as NS
+
+    from tests.e2e import CHUNK, FakeDC, make_client
+
+    size = 8 * CHUNK
+    path = tmp_path / "up.bin"
+    with open(path, "wb") as handle:
+        handle.truncate(size)
+
+    dc = FakeDC(size, step=0.00002)
+    client = make_client(dc, "upprogress", pool=dc.pool(4))
+    client.me = NS(is_bot=False, is_premium=False)
+    await client.storage.open()
+
+    seen = []
+
+    async def note(current, total):
+        seen.append((current, total))
+
+    await client.save_file(str(path), progress=note)
+
+    assert seen, "an upload that transferred bytes reported none"
+    assert seen[-1] == (size, size), (
+        f"the last call must report the whole file, got {seen[-1]}"
+    )
+    assert all(c <= size for c, _ in seen), (
+        "no call may claim more bytes than were sent"
+    )
+    assert seen == sorted(seen), "progress must not go backwards"
+
+
+OWN_ID = 7933658472
+
+
+def _self_aware_client():
+    from types import SimpleNamespace
+
+    from pyrogram import raw
+    from tests.test_listeners import FakeClient
+
+    class _Client(FakeClient):
+        async def resolve_peer(self, peer_id):
+            if peer_id in ("me", "self"):
+                return raw.types.InputPeerSelf()
+
+            return raw.types.InputPeerUser(user_id=555, access_hash=1)
+
+    client = _Client(listener_timeout=0.05)
+
+    async def user_id():
+        return OWN_ID
+
+    client.storage = SimpleNamespace(user_id=user_id)
+
+    return client
+
+
+async def test_a_listener_can_wait_on_saved_messages():
+    """``resolve_peer("me")`` answers ``InputPeerSelf``, which carries no id, and
+    ``get_peer_id`` raised ``ValueError: Peer type invalid`` on it. That killed
+    listen, ask, wait_for_message, wait_for_callback_query, stop_listening and
+    register_next_step_handler for the commonest peer string in the library.
+    """
+
+    from pyrogram.errors import ListenerTimeout
+    from pyrogram.methods.listeners.listen import resolve_listener_ids
+
+    client = _self_aware_client()
+
+    assert await resolve_listener_ids(client, "me") == OWN_ID
+    assert await resolve_listener_ids(client, "self") == OWN_ID
+    assert await resolve_listener_ids(client, "someone") == 555, (
+        "a username still resolves the way it always did"
+    )
+    assert await resolve_listener_ids(client, 42) == 42, "an int is still taken as given"
+    assert await resolve_listener_ids(client, None) is None
+    assert await resolve_listener_ids(client, ["me", 42]) == [OWN_ID, 42]
+
+    with pytest.raises(ListenerTimeout):
+        await asyncio.wait_for(client.listen(chat_id="me"), timeout=2)
+
+
+async def test_a_listener_on_saved_messages_hears_its_own_chat():
+    """Resolving to the right number is only half of it: the listener is filed by
+    that id, so a message from Saved Messages has to reach it.
+    """
+
+    from pyrogram.enums import ListenerTypes
+    from tests.test_listeners import message, waiting
+
+    from pyrogram.methods.listeners.listen import resolve_listener_ids
+
+    client = _self_aware_client()
+    resolved = await resolve_listener_ids(client, "me")
+    _, future = waiting(client, chat_id=resolved)
+
+    assert await client.listeners.feed(
+        client, ListenerTypes.MESSAGE, message(chat_id=OWN_ID)
+    ) is True
+    assert future.result().chat.id == OWN_ID
+
+
+async def test_stopping_a_saved_messages_listener_does_not_raise():
+    """``stop_listening`` and ``register_next_step_handler`` share the same
+    resolver, so they went down with it.
+    """
+
+    client = _self_aware_client()
+
+    assert await client.stop_listening(chat_id="me") == 0
+
+    def step(c, m):
+        return None
+
+    await client.register_next_step_handler(step, chat_id="me")
+    assert await client.stop_listening(chat_id="me") == 1
+
+
+def test_the_peer_id_behind_a_self_peer_needs_the_session():
+    """The helper the fix leans on: every other peer keeps its old answer."""
+
+    from pyrogram import raw, utils
+
+    assert utils.get_peer_id(raw.types.InputPeerUser(user_id=7, access_hash=1)) == 7
+    assert utils.get_peer_id(raw.types.InputPeerChat(chat_id=7)) == -7
+
+    with pytest.raises(ValueError):
+        utils.get_peer_id(raw.types.InputPeerSelf())
+
+
+def _history_client(result):
+    from pyrogram import raw
+    from pyrogram.methods.messages.delete_chat_history import DeleteChatHistory
+
+    class _Client(DeleteChatHistory):
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerChannel(channel_id=1, access_hash=1)
+
+        async def invoke(self, query):
+            return result
+
+    return _Client()
+
+
+async def test_clearing_a_channel_reads_the_update_that_answers():
+    """``channels.deleteHistory`` answers with a plain ``Updates``, whose order is
+    not contractual and which can be empty. Taking ``updates[0].messages`` raised
+    ``AttributeError`` on the default call for a supergroup, where the server hides
+    the history and sends ``updateChannelAvailableMessages``, and ``IndexError``
+    whenever there was nothing left to delete.
+    """
+
+    from pyrogram import raw
+
+    deleted = raw.types.Updates(
+        updates=[raw.types.UpdateDeleteChannelMessages(
+            channel_id=1, messages=[2, 3, 4], pts=4, pts_count=3
+        )],
+        users=[], chats=[], date=0, seq=0,
+    )
+    assert await _history_client(deleted).delete_chat_history(-100) == 3
+
+    hidden = raw.types.Updates(
+        updates=[raw.types.UpdateChannelAvailableMessages(
+            channel_id=1, available_min_id=5
+        )],
+        users=[], chats=[], date=0, seq=0,
+    )
+    assert await _history_client(hidden).delete_chat_history(-100) == 0, (
+        "a hidden history deleted no messages, and saying so beats crashing"
+    )
+
+    empty = raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+    assert await _history_client(empty).delete_chat_history(-100) == 0, (
+        "there was nothing to delete, which is not an IndexError"
+    )
+
+    unordered = raw.types.Updates(
+        updates=[
+            raw.types.UpdateChannelAvailableMessages(channel_id=1, available_min_id=5),
+            raw.types.UpdateDeleteChannelMessages(
+                channel_id=1, messages=[2, 3], pts=4, pts_count=2
+            ),
+        ],
+        users=[], chats=[], date=0, seq=0,
+    )
+    assert await _history_client(unordered).delete_chat_history(-100) == 2, (
+        "the answer is found by type, not by position"
+    )
+
+
+async def test_clearing_a_private_history_still_counts_the_old_way():
+    """Only the channel branch changed; a user or basic group peer still reports
+    what ``messages.affectedHistory`` carried.
+    """
+
+    from pyrogram import raw
+    from pyrogram.methods.messages.delete_chat_history import DeleteChatHistory
+
+    class _Client(DeleteChatHistory):
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerUser(user_id=1, access_hash=1)
+
+        async def invoke(self, query):
+            return raw.types.messages.AffectedHistory(pts=9, pts_count=7, offset=0)
+
+    assert await _Client().delete_chat_history(1) == 7
+
+
+def test_a_buffer_without_a_name_still_gets_one():
+    """Uploads accept any binary stream, and ``save_file`` already falls back with
+    ``getattr(fp, "name", "file.jpg")``. The naming layer then read ``.name`` bare,
+    so an ``io.BytesIO`` built from generated bytes raised ``AttributeError`` in
+    seven send methods, three of which have no ``file_name`` parameter to work
+    around it with.
+    """
+
+    import io as _io
+    import pathlib
+
+    from pyrogram import utils
+
+    assert utils.get_file_name(_io.BytesIO(b"x"), fallback="file.zip") == "file.zip"
+
+    named = _io.BytesIO(b"x")
+    named.name = "kept.mp4"
+    assert utils.get_file_name(named, fallback="file.zip") == "kept.mp4"
+    assert utils.get_file_name(named, file_name="wins.mp4", fallback="file.zip") == "wins.mp4"
+
+    assert utils.get_file_name("dir/on_disk.png", fallback="file.zip") == "on_disk.png"
+    assert utils.get_file_name(pathlib.PurePath("dir/on_disk.png")) == "on_disk.png"
+
+
+def test_a_stream_that_is_not_a_bytesio_is_still_a_stream():
+    """The helper tested only for ``io.BytesIO``, so any other binary stream fell
+    through to ``pathlib.Path(media)`` and raised ``TypeError``.
+    """
+
+    import io as _io
+
+    from pyrogram import utils
+
+    class _Stream(_io.RawIOBase):
+        name = "opened.bin"
+
+        def readable(self):
+            return True
+
+    assert utils.get_file_name(_Stream(), fallback="file.zip") == "opened.bin"
+
+    class _Anonymous(_io.RawIOBase):
+        def readable(self):
+            return True
+
+    assert utils.get_file_name(_Anonymous(), fallback="file.zip") == "file.zip"
+
+
+def test_guessing_a_mime_type_survives_a_nameless_buffer():
+    """``guess_mime_type`` is what the whole InputMedia family and
+    ``edit_message_media`` reach first, and it read ``.name`` off any BytesIO.
+    """
+
+    import io as _io
+
+    import pyrogram
+
+    client = pyrogram.Client("mimeguess", api_id=1, api_hash="x", in_memory=True)
+
+    assert client.guess_mime_type(_io.BytesIO(b"x")) is None, (
+        "an unnamed buffer has nothing to guess from, which is not a crash"
+    )
+
+    named = _io.BytesIO(b"x")
+    named.name = "a.png"
+    assert client.guess_mime_type(named) == "image/png"
+    assert client.guess_mime_type("a.png") == "image/png"
+
+
+class _CapturedUpload(Exception):
+    pass
+
+
+def _upload_capturing_client(base):
+    from pyrogram import enums, raw
+
+    class _Client(base):
+        sent = None
+        parse_mode = enums.ParseMode.DISABLED
+
+        def rnd_id(self):
+            return 1
+
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerSelf()
+
+        async def save_file(self, path, **kwargs):
+            if path is None:
+                return None
+
+            return raw.types.InputFile(id=1, parts=1, name="x", md5_checksum="")
+
+        async def invoke(self, query, **kwargs):
+            _Client.sent = query
+            raise _CapturedUpload
+
+        def guess_mime_type(self, filename):
+            import pyrogram
+
+            return pyrogram.Client.guess_mime_type(self, filename)
+
+        mimetypes = __import__("mimetypes").MimeTypes()
+
+    client = _Client()
+
+    from pyrogram.parser import Parser
+
+    client.parser = Parser(client)
+
+    return client
+
+
+async def _uploaded_attributes(client, coro):
+    with pytest.raises(_CapturedUpload):
+        await coro
+
+    return client.sent.media
+
+
+async def test_sending_a_nameless_buffer_names_it_on_the_wire():
+    """The seven singular send methods read ``.name`` straight off the caller's
+    stream. ``send_media_group`` and ``send_paid_media`` next door already used
+    ``getattr(i.media, "name", "video.mp4")``, so the crash was an inconsistency
+    inside the same package rather than a documented limit.
+    """
+
+    import io as _io
+
+    from pyrogram import raw
+    from pyrogram.methods.messages.send_document import SendDocument
+    from pyrogram.methods.messages.send_sticker import SendSticker
+
+    def name_of(media):
+        for attribute in media.attributes:
+            if isinstance(attribute, raw.types.DocumentAttributeFilename):
+                return attribute.file_name
+
+        raise AssertionError("the upload carried no file name at all")
+
+    client = _upload_capturing_client(SendDocument)
+    media = await _uploaded_attributes(
+        client, client.send_document(1, _io.BytesIO(b"generated"))
+    )
+    assert name_of(media) == "file.zip"
+    assert media.mime_type == "application/zip"
+
+    named = _io.BytesIO(b"generated")
+    named.name = "kept.txt"
+    media = await _uploaded_attributes(client, client.send_document(1, named))
+    assert name_of(media) == "kept.txt", "a stream that has a name keeps it"
+
+    media = await _uploaded_attributes(
+        client, client.send_document(1, _io.BytesIO(b"x"), file_name="chosen.csv")
+    )
+    assert name_of(media) == "chosen.csv", "file_name still wins"
+
+    sticker = _upload_capturing_client(SendSticker)
+    media = await _uploaded_attributes(
+        sticker, sticker.send_sticker(1, _io.BytesIO(b"webp"))
+    )
+    assert name_of(media) == "sticker.webp", (
+        "send_sticker has no file_name parameter, so the fallback is the only way"
+    )
+
+
+def test_something_that_is_not_a_name_falls_back():
+    """The helper reached ``pathlib.Path(media)`` with whatever it was handed and
+    raised ``TypeError`` on anything that was not a path.
+    """
+
+    from pyrogram import utils
+
+    for odd in (None, b"raw", 5, object()):
+        assert utils.get_file_name(odd, fallback="file.zip") == "file.zip"
+
+
+def test_guessing_a_mime_type_reads_any_stream():
+    """``guess_mime_type`` tested for ``io.BytesIO`` alone, so an open file went to
+    ``mimetypes.guess_type`` as an object and raised ``TypeError`` - which
+    edit_message_media walks straight into, since it passes the media itself.
+    """
+
+    import io as _io
+    import pathlib
+    import tempfile
+
+    import pyrogram
+
+    client = pyrogram.Client("mimeany", api_id=1, api_hash="x", in_memory=True)
+
+    path = pathlib.Path(tempfile.mkdtemp()) / "real.png"
+    path.write_bytes(b"x")
+
+    with open(path, "rb") as handle:
+        assert client.guess_mime_type(handle) == "image/png"
+
+    assert client.guess_mime_type(pathlib.PurePath("a/b.png")) == "image/png"
+
+    for odd in (None, b"raw", 5):
+        assert client.guess_mime_type(odd) is None, "a guess that cannot be made is None"
+
+    named = _io.BytesIO(b"x")
+    named.name = "a.mp4"
+    assert client.guess_mime_type(named) == "video/mp4"
+
+
+async def test_an_edited_media_is_named_after_its_kind():
+    """The InputMedia types asked for a name with no fallback, so a nameless
+    buffer put an empty DocumentAttributeFilename on the wire and the message
+    arrived with no file name at all.
+    """
+
+    import io as _io
+
+    from pyrogram import raw, types
+    from pyrogram.methods.messages.edit_message_media import resolve_input_media
+
+    class _Parser:
+        async def parse(self, text, parse_mode):
+            return {"message": text, "entities": None}
+
+    class _Client:
+        parser = _Parser()
+        sent = None
+
+        async def resolve_peer(self, chat_id):
+            return raw.types.InputPeerSelf()
+
+        async def save_file(self, media, **kwargs):
+            if media is None:
+                return None
+
+            return raw.types.InputFile(id=1, parts=1, name="f", md5_checksum="")
+
+        def guess_mime_type(self, media):
+            import pyrogram
+
+            return pyrogram.Client.guess_mime_type(self, media)
+
+        mimetypes = __import__("mimetypes").MimeTypes()
+
+        async def invoke(self, query):
+            self.sent = query
+
+            return raw.types.MessageMediaDocument(
+                document=raw.types.Document(
+                    id=1, access_hash=2, file_reference=b"", date=0,
+                    mime_type="video/mp4", size=1, dc_id=1, attributes=[]
+                )
+            )
+
+    async def uploaded_name(media, **kwargs):
+        client = _Client()
+        await resolve_input_media(client, 1, media, **kwargs)
+
+        for attribute in client.sent.media.attributes:
+            if isinstance(attribute, raw.types.DocumentAttributeFilename):
+                return attribute.file_name
+
+        raise AssertionError("the upload carried no file name at all")
+
+    buffer = _io.BytesIO(b"generated")
+
+    assert await uploaded_name(types.InputMediaVideo(buffer)) == "video.mp4"
+    assert await uploaded_name(types.InputMediaDocument(buffer)) == "file.zip"
+    assert await uploaded_name(types.InputMediaAudio(buffer)) == "audio.mp3"
+    assert await uploaded_name(types.InputMediaAnimation(buffer)) == "animation.mp4"
+
+    named = _io.BytesIO(b"generated")
+    named.name = "kept.mp4"
+    assert await uploaded_name(types.InputMediaVideo(named)) == "kept.mp4", (
+        "a stream that has a name still keeps it"
+    )
+
+
+async def test_a_fallback_name_keeps_the_mime_type_its_method_documents():
+    """The fallback name is what the mime is guessed from, so an invented
+    extension quietly decides what goes on the wire. Every fallback must guess
+    back to the default its own method already declared, and send_voice - whose
+    fallback feeds nothing else, since a voice note carries no file name - takes
+    none at all so that ``audio/mpeg`` still applies.
+    """
+
+    import io as _io
+
+    from pyrogram.methods.messages.send_animation import SendAnimation
+    from pyrogram.methods.messages.send_audio import SendAudio
+    from pyrogram.methods.messages.send_document import SendDocument
+    from pyrogram.methods.messages.send_sticker import SendSticker
+    from pyrogram.methods.messages.send_video import SendVideo
+    from pyrogram.methods.messages.send_video_note import SendVideoNote
+    from pyrogram.methods.messages.send_voice import SendVoice
+
+    cases = [
+        (SendDocument, "send_document", "application/zip"),
+        (SendVideo, "send_video", "video/mp4"),
+        (SendAudio, "send_audio", "audio/mpeg"),
+        (SendAnimation, "send_animation", "video/mp4"),
+        (SendSticker, "send_sticker", "image/webp"),
+        (SendVoice, "send_voice", "audio/mpeg"),
+        (SendVideoNote, "send_video_note", "video/mp4"),
+    ]
+
+    for base, name, documented in cases:
+        client = _upload_capturing_client(base)
+        media = await _uploaded_attributes(
+            client, getattr(client, name)(1, _io.BytesIO(b"generated"))
+        )
+
+        assert media.mime_type == documented, (
+            f"{name} sends {media.mime_type} for a nameless stream, but documents "
+            f"{documented}; the fallback name must not change what goes on the wire"
+        )
+
+
+def _flood_session(amounts):
+    import collections
+    from types import SimpleNamespace
+
+    from pyrogram import raw
+    from pyrogram.errors import FloodWait
+    from pyrogram.session.session import Session
+
+    session = Session.__new__(Session)
+    session.is_started = asyncio.Event()
+    session.is_started.set()
+    session.client = SimpleNamespace(name="flood")
+    session.last_used = 0.0
+    session.flood_history = collections.deque(maxlen=50)
+    session._dynamic_backoff = float(Session.SLEEP_THRESHOLD)
+    session._last_flood_decay = 0.0
+    session.sent = []
+    session.slept = []
+
+    queue = list(amounts)
+
+    async def send(query, timeout=None):
+        session.sent.append(query)
+
+        if queue:
+            raise FloodWait(queue.pop(0))
+
+        return "answered"
+
+    session.send = send
+
+    return session
+
+
+async def _drive(session, sleep_threshold, monkeypatch):
+    from pyrogram import raw
+
+    async def no_wait(amount):
+        session.slept.append(amount)
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+    return await session._invoke(
+        raw.functions.help.GetConfig(), retries=10, timeout=5,
+        sleep_threshold=sleep_threshold,
+    )
+
+
+async def test_asking_for_no_sleeping_raises_the_flood(monkeypatch):
+    """``sleep_threshold=0`` is documented as raising every flood, and it is the
+    only way a caller can refuse to be slept. A dynamic backoff raised the bar it
+    was compared against to between 10 and 60 seconds, so any flood under that was
+    slept through and the setting did nothing.
+    """
+
+    from pyrogram.errors import FloodWait
+
+    session = _flood_session([3])
+
+    with pytest.raises(FloodWait):
+        await _drive(session, 0, monkeypatch)
+
+    assert session.slept == [], "asking for no sleeping must not sleep"
+
+
+async def test_a_flood_under_the_threshold_is_still_slept(monkeypatch):
+    """The ordinary case has to keep working: one short flood, one sleep, one
+    answer.
+    """
+
+    session = _flood_session([3])
+
+    assert await _drive(session, 10, monkeypatch) == "answered"
+    assert session.slept == [3]
+
+
+async def test_a_flood_that_never_lets_up_gives_up(monkeypatch):
+    """A server that keeps answering FLOOD_WAIT 3 met a branch that slept, retried,
+    and never decremented ``retries`` - so a single call looped for as long as the
+    server kept saying no. Observed live: fifty waits and counting on one
+    unpin_all_chat_messages, killed rather than returned.
+    """
+
+    from pyrogram.errors import FloodWait
+
+    session = _flood_session([3] * 500)
+
+    with pytest.raises(FloodWait):
+        await _drive(session, 10, monkeypatch)
+
+    assert sum(session.slept) <= 10 * 10, (
+        "the total time spent sleeping on floods is bounded by the threshold "
+        "the caller allowed"
+    )
+    assert len(session.slept) < 500, "it must stop asking long before the server does"
+
+
+async def test_a_caller_can_still_choose_to_wait_forever(monkeypatch):
+    """A negative threshold has always meant "sleep through anything", and the
+    bound must not take that away.
+    """
+
+    session = _flood_session([3] * 40)
+
+    assert await _drive(session, -1, monkeypatch) == "answered"
+    assert len(session.slept) == 40
+
+
+async def test_creating_a_group_unwraps_the_answer_it_gets():
+    """``messages.createChat`` returned ``Updates`` at layer 158 and the method read
+    ``r.chats[0]`` off it. The layer 227 bump changed the return type to
+    ``messages.InvitedUsers``, which carries the real ``Updates`` in a field of its
+    own and has no ``chats`` at all, so every call raised AttributeError.
+    """
+
+    from pyrogram import raw, types
+    from pyrogram.methods.chats.create_group import CreateGroup
+
+    class _Client(CreateGroup):
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerSelf()
+
+        async def invoke(self, query):
+            return raw.types.messages.InvitedUsers(
+                updates=raw.types.Updates(
+                    updates=[],
+                    users=[],
+                    chats=[raw.types.Chat(
+                        id=7, title="made", photo=raw.types.ChatPhotoEmpty(),
+                        participants_count=1, date=0, version=1,
+                    )],
+                    date=0, seq=0,
+                ),
+                missing_invitees=[],
+            )
+
+    chat = await _Client().create_group("made", "me")
+
+    assert isinstance(chat, types.Chat), "the docstring promises a Chat"
+    assert chat.id == -7, "and it is the chat the server just made"
+    assert chat.title == "made"
+
+
+async def test_voting_sends_the_option_the_server_named():
+    """``messages.sendVote`` takes the ``option:bytes`` the server put on each
+    ``pollAnswer``. Poll parsing keeps that as ``persistent_id``, decoded UTF-8,
+    but the layer 227 bump renamed the attribute from ``data`` without updating
+    this caller, so every vote raised AttributeError before a request was built.
+    """
+
+    from types import SimpleNamespace
+
+    from pyrogram import raw, types
+    from pyrogram.methods.messages.vote_poll import VotePoll
+
+    answers = [
+        raw.types.PollAnswer(text=raw.types.TextWithEntities(text=t, entities=[]), option=o)
+        for t, o in (("a", b"0"), ("b", b"1"), ("c", b"2"))
+    ]
+    media_poll = raw.types.MessageMediaPoll(
+        poll=raw.types.Poll(id=1, question=raw.types.TextWithEntities(text="q", entities=[]),
+                            answers=answers, hash=0),
+        results=raw.types.PollResults(results=[], total_voters=0),
+    )
+
+    class _Client(VotePoll):
+        sent = None
+
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerSelf()
+
+        async def get_messages(self, chat_id, message_id):
+            return SimpleNamespace(poll=await types.Poll._parse(self, media_poll))
+
+        async def invoke(self, query):
+            _Client.sent = query
+
+            return raw.types.Updates(
+                updates=[raw.types.UpdateMessagePoll(poll_id=1, results=media_poll.results,
+                                                     poll=media_poll.poll)],
+                users=[], chats=[], date=0, seq=0,
+            )
+
+    client = _Client()
+
+    await client.vote_poll(1, 2, 0)
+    assert _Client.sent.options == [b"0"], (
+        "the vote carries the option bytes the server named, not a missing attribute"
+    )
+
+    await client.vote_poll(1, 2, [1, 2])
+    assert _Client.sent.options == [b"1", b"2"], "and every option for a multi answer poll"
+
+
+async def test_every_privacy_setting_reaches_the_field_it_belongs_to():
+    """The setter reads the live settings and writes a modified copy back, so each
+    parameter has to be assigned onto the raw field name, not its own. Seven were;
+    show_gift_button was assigned onto itself, and the raw object is slotted, so
+    passing it raised AttributeError before the write RPC was sent.
+    """
+
+    from pyrogram import raw, types
+    from pyrogram.methods.account.set_global_privacy_settings import (
+        SetGlobalPrivacySettings,
+    )
+
+    sent = []
+
+    class _Client(SetGlobalPrivacySettings):
+        async def invoke(self, query):
+            if isinstance(query, raw.functions.account.GetGlobalPrivacySettings):
+                return raw.types.GlobalPrivacySettings()
+
+            sent.append(query.settings)
+
+            return query.settings
+
+    result = await _Client().set_global_privacy_settings(
+        archive_and_mute_new_chats=True,
+        keep_unmuted_chats_archived=True,
+        keep_chats_from_folders_archived=True,
+        show_read_date=False,
+        allow_new_chats_from_unknown_users=False,
+        incoming_paid_message_star_count=5,
+        show_gift_button=True,
+    )
+
+    written = sent[0]
+
+    assert written.display_gifts_button is True, (
+        "show_gift_button belongs to display_gifts_button on the wire"
+    )
+    assert written.archive_and_mute_new_noncontact_peers is True
+    assert written.keep_archived_unmuted is True
+    assert written.keep_archived_folders is True
+    assert written.hide_read_marks is True
+    assert written.new_noncontact_peers_require_premium is True
+    assert written.noncontact_peers_paid_stars == 5
+    assert result.show_gift_button is True, "and it reads back the way it was asked"
+
+    assert not set(raw.types.GlobalPrivacySettings.__slots__) - {
+        "archive_and_mute_new_noncontact_peers", "keep_archived_unmuted",
+        "keep_archived_folders", "hide_read_marks",
+        "new_noncontact_peers_require_premium", "display_gifts_button",
+        "noncontact_peers_paid_stars", "disallowed_gifts",
+    }, "a new raw field means the setter needs a parameter for it"
+
+
+def test_a_vector_of_objects_survives_a_trailing_field():
+    from io import BytesIO
+
+    from pyrogram import raw
+    from pyrogram.raw.core import TLObject
+
+    update = raw.types.UpdateShort(
+        update=raw.types.UpdatePrivacy(
+            key=raw.types.PrivacyKeyPhoneNumber(),
+            rules=[raw.types.PrivacyValueAllowAll()],
+        ),
+        date=1735689600,
+    )
+
+    read_back = TLObject.read(BytesIO(update.write()))
+
+    assert isinstance(read_back.update, raw.types.UpdatePrivacy)
+    assert [type(rule) for rule in read_back.update.rules] == [
+        raw.types.PrivacyValueAllowAll
+    ], "a vector of objects stays a vector of objects"
+    assert read_back.date == 1735689600, "and the field after it is still there"
+
+
+def test_a_bare_vector_of_numbers_still_reads_as_numbers():
+    from io import BytesIO
+
+    from pyrogram import raw
+    from pyrogram.raw.core import TLObject
+    from pyrogram.raw.core.primitives import Int, Long, Vector
+
+    assert list(TLObject.read(BytesIO(Vector([7, 8, 9], Int)))) == [7, 8, 9]
+    assert list(TLObject.read(BytesIO(Vector([42], Int)))) == [42]
+    assert list(TLObject.read(BytesIO(Vector([2 ** 40 + 1], Long)))) == [2 ** 40 + 1]
+    assert list(TLObject.read(BytesIO(Vector([], Int)))) == []
+
+    counters = [
+        raw.types.messages.SearchCounter(
+            filter=raw.types.InputMessagesFilterPhotos(), count=3
+        ),
+        raw.types.messages.SearchCounter(
+            filter=raw.types.InputMessagesFilterVideo(), count=4
+        ),
+    ]
+    read_back = TLObject.read(BytesIO(Vector(counters)))
+
+    assert [counter.count for counter in read_back] == [3, 4], (
+        "a bare vector of objects reads as objects too"
+    )
+
+
+def _channel_photos_client(pages, chat_photo_id):
+    from types import SimpleNamespace
+
+    from pyrogram import raw
+
+    class _Client:
+        searches = []
+
+        async def resolve_peer(self, chat_id):
+            return raw.types.InputPeerChannel(channel_id=1, access_hash=0)
+
+        async def invoke(self, query, *args, **kwargs):
+            if isinstance(query, raw.functions.channels.GetFullChannel):
+                return SimpleNamespace(
+                    full_chat=SimpleNamespace(chat_photo=chat_photo_id)
+                )
+
+            self.searches.append(query.offset_id)
+
+            return pages.get(query.offset_id, [])
+
+    return _Client()
+
+
+def _photo(unique_id):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(file_id=f"id-{unique_id}", file_unique_id=unique_id)
+
+
+def _photo_message(message_id, unique_id):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id=message_id, new_chat_photo=_photo(unique_id))
+
+
+async def test_a_channels_photo_history_is_paged_to_the_end(monkeypatch):
+    from pyrogram import types, utils
+    from pyrogram.methods.users.get_chat_photos import GetChatPhotos
+
+    pages = {
+        0: [_photo_message(30, "c"), _photo_message(20, "b")],
+        20: [_photo_message(10, "a")],
+        10: [],
+    }
+
+    client = _channel_photos_client(pages, "current")
+
+    async def parse_messages(_client, messages, **kwargs):
+        return messages
+
+    monkeypatch.setattr(utils, "parse_messages", parse_messages)
+    monkeypatch.setattr(types.Photo, "_parse", staticmethod(lambda _c, photo: _photo(photo)))
+
+    got = [photo.file_unique_id async for photo in GetChatPhotos.get_chat_photos(client, 1)]
+
+    assert got == ["current", "c", "b", "a"], (
+        "with no limit the generator must walk every page, not stop after the first"
+    )
+    assert client.searches == [0, 20, 10], "each page must start where the last one ended"
+
+    client.searches.clear()
+    capped = [
+        photo.file_unique_id
+        async for photo in GetChatPhotos.get_chat_photos(client, 1, limit=2)
+    ]
+
+    assert capped == ["current", "c"], "a limit still caps the run"
+
+
+async def test_a_channels_current_photo_is_not_yielded_twice(monkeypatch):
+    from pyrogram import types, utils
+    from pyrogram.methods.users.get_chat_photos import GetChatPhotos
+
+    newest = _photo_message(30, "c")
+    newest.new_chat_photo.file_id = "id-from-a-message"
+
+    client = _channel_photos_client({0: [newest], 30: []}, "c")
+
+    async def parse_messages(_client, messages, **kwargs):
+        return messages
+
+    monkeypatch.setattr(utils, "parse_messages", parse_messages)
+    monkeypatch.setattr(
+        types.Photo, "_parse", staticmethod(lambda _c, photo: _photo(photo))
+    )
+
+    got = [
+        photo.file_unique_id
+        async for photo in GetChatPhotos.get_chat_photos(client, 1, limit=5)
+    ]
+
+    assert got == ["c"], (
+        "the same photo carries a different file_id depending on where it was "
+        "read from, so only file_unique_id can tell the current photo from its "
+        "own history entry"
+    )
+
+
+async def test_a_removed_channel_photo_does_not_end_the_walk(monkeypatch):
+    from types import SimpleNamespace
+
+    from pyrogram import types, utils
+    from pyrogram.methods.users.get_chat_photos import GetChatPhotos
+
+    removed = SimpleNamespace(id=20, new_chat_photo=None)
+
+    pages = {
+        0: [_photo_message(30, "b")],
+        30: [removed],
+        20: [_photo_message(10, "a")],
+        10: [],
+    }
+
+    client = _channel_photos_client(pages, None)
+
+    async def parse_messages(_client, messages, **kwargs):
+        return messages
+
+    monkeypatch.setattr(utils, "parse_messages", parse_messages)
+    monkeypatch.setattr(
+        types.Photo, "_parse", staticmethod(lambda _c, photo: _photo(photo) if photo else None)
+    )
+
+    got = [photo.file_unique_id async for photo in GetChatPhotos.get_chat_photos(client, 1)]
+
+    assert got == ["b", "a"], (
+        "a page carrying only a removed photo is not the end of the history"
+    )
+
+
+async def test_all_stories_follows_the_servers_has_more():
+    from pyrogram import raw
+    from pyrogram.methods.stories.get_all_stories import GetAllStories
+
+    def page(has_more, state):
+        return raw.types.stories.AllStories(
+            has_more=has_more, count=0, state=state, peer_stories=[],
+            chats=[], users=[], stealth_mode=raw.types.StoriesStealthMode()
+        )
+
+    pages = [page(True, "s1"), page(False, "s2"), page(True, "s3")]
+    asked = []
+
+    class _Client:
+        async def invoke(self, query, *args, **kwargs):
+            asked.append((query.next, query.state))
+
+            return pages[len(asked) - 1]
+
+    async for _ in GetAllStories.get_all_stories(_Client()):
+        pass
+
+    assert asked == [(None, None), (True, "s1")], (
+        "has_more means another page, and the state of the page just read is "
+        "what asks for it"
+    )
+
+
+async def test_unchanged_stories_end_the_generator_instead_of_crashing():
+    from pyrogram import raw
+    from pyrogram.methods.stories.get_all_stories import GetAllStories
+
+    class _Client:
+        async def invoke(self, query, *args, **kwargs):
+            return raw.types.stories.AllStoriesNotModified(
+                state="s", stealth_mode=raw.types.StoriesStealthMode()
+            )
+
+    async for _ in GetAllStories.get_all_stories(_Client(), state="s"):
+        raise AssertionError(
+            "passing a state is the documented way to check for changes, and "
+            "an unchanged peerset carries no stories to yield"
+        )
+
+
+async def test_all_stories_stops_when_the_state_stops_moving():
+    from pyrogram import raw
+    from pyrogram.methods.stories.get_all_stories import GetAllStories
+
+    class _Client:
+        asked = 0
+
+        async def invoke(self, query, *args, **kwargs):
+            self.asked += 1
+
+            if self.asked > 10:
+                raise AssertionError("the generator never stopped asking")
+
+            return raw.types.stories.AllStories(
+                has_more=True, count=0, state="stuck", peer_stories=[],
+                chats=[], users=[], stealth_mode=raw.types.StoriesStealthMode()
+            )
+
+    client = _Client()
+
+    async for _ in GetAllStories.get_all_stories(client):
+        pass
+
+    assert client.asked == 2, (
+        "a page that hands back the state it was asked for has not moved, so "
+        "honouring has_more again would just ask for it forever"
+    )
+
+
+def test_a_peer_id_of_none_is_invalid_rather_than_unorderable():
+    from pyrogram import utils
+
+    with pytest.raises(ValueError):
+        utils.get_peer_type(None)
+
+
+async def test_a_method_whose_peer_is_required_names_the_missing_peer():
+    from pyrogram.methods.messages.summarize_text import SummarizeText
+
+    class _Client:
+        is_connected = True
+
+        async def resolve_peer(self, peer_id):
+            from pyrogram import utils
+            return utils.get_peer_type(peer_id)
+
+        async def invoke(self, query, *args, **kwargs):
+            raise AssertionError("a call with no peer must not reach the wire")
+
+    with pytest.raises(ValueError):
+        await SummarizeText.summarize_text(_Client(), id=1)
+
+
+async def test_get_bot_info_without_a_bot_asks_about_the_caller():
+    from pyrogram import raw
+    from pyrogram.methods.bots.get_bot_info import GetBotInfo
+
+    sent = []
+
+    class _Client:
+        async def resolve_peer(self, peer_id):
+            raise AssertionError(
+                "bots.getBotInfo declares bot as flags.0?InputUser, so omitting "
+                "it is how the caller asks about its own bot"
+            )
+
+        async def invoke(self, query, *args, **kwargs):
+            sent.append(query)
+            return raw.types.bots.BotInfo(name="n", about="a", description="d")
+
+    await GetBotInfo.get_bot_info(_Client())
+
+    assert sent[0].bot is None, (
+        "an unset flag is what tells the server to answer for the current bot; "
+        f"the query carried {sent[0].bot!r} instead"
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "!!!!not-base64!!!!", "AQADAgAT", None],
+    ids=["empty", "not-base64", "short", "none"],
+)
+def test_a_file_id_that_cannot_be_read_is_refused_by_value(bad):
+    from pyrogram.file_id import FileId
+
+    with pytest.raises(ValueError):
+        FileId.decode(bad)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "!!!!not-base64!!!!", "AQADAgAT", None],
+    ids=["empty", "not-base64", "short", "none"],
+)
+def test_a_file_unique_id_that_cannot_be_read_is_refused_by_value(bad):
+    from pyrogram.file_id import FileUniqueId
+
+    with pytest.raises(ValueError):
+        FileUniqueId.decode(bad)
+
+
+async def test_downloading_a_malformed_file_id_says_what_is_wrong_with_it():
+    import pyrogram
+
+    client = pyrogram.Client("badfileid", api_id=1, api_hash="x", in_memory=True)
+
+    with pytest.raises(ValueError):
+        await client.download_media("!!!!not-base64!!!!")
+
+
+async def test_get_bot_info_still_refuses_a_peer_id_that_is_not_a_peer():
+    from pyrogram.methods.bots.get_bot_info import GetBotInfo
+
+    class _Client:
+        is_connected = True
+
+        async def resolve_peer(self, peer_id):
+            from pyrogram import utils
+            return utils.get_peer_type(peer_id)
+
+        async def invoke(self, query, *args, **kwargs):
+            raise AssertionError(
+                "0 is not a peer id, and it is falsy: treating it as an omitted "
+                "flag would quietly answer about the caller's own bot instead"
+            )
+
+    with pytest.raises(ValueError):
+        await GetBotInfo.get_bot_info(_Client(), 0)
+
+
+@pytest.mark.parametrize(
+    "module, klass, method, extra",
+    [
+        ("get_bot_name", "GetBotName", "get_bot_name", {}),
+        ("get_bot_info_description", "GetBotInfoDescription",
+         "get_bot_info_description", {}),
+        ("get_bot_info_short_description", "GetBotInfoShortDescription",
+         "get_bot_info_short_description", {}),
+        ("set_bot_name", "SetBotName", "set_bot_name", {"name": "x"}),
+        ("set_bot_info_description", "SetBotInfoDescription",
+         "set_bot_info_description", {"description": "x"}),
+        ("set_bot_info_short_description", "SetBotInfoShortDescription",
+         "set_bot_info_short_description", {"short_description": "x"}),
+    ],
+)
+async def test_a_bot_this_account_does_not_own_is_refused_not_taken_for_itself(
+    module, klass, method, extra
+):
+    import importlib
+
+    mod = importlib.import_module(f"pyrogram.methods.bots.{module}")
+
+    class _Client:
+        is_connected = True
+
+        async def resolve_peer(self, peer_id):
+            from pyrogram import utils
+            return utils.get_peer_type(peer_id)
+
+        async def invoke(self, query, *args, **kwargs):
+            raise AssertionError(
+                "0 is not a bot id, and it is falsy: leaving the flag unset "
+                "would aim the call at the caller's own bot instead"
+            )
+
+    fn = getattr(getattr(mod, klass), method)
+
+    with pytest.raises(ValueError):
+        await fn(_Client(), for_my_bot=0, **extra)
+
+
+async def test_a_personal_chat_history_asks_the_server_once(monkeypatch):
+    from pyrogram import raw, utils
+    from pyrogram.methods.messages.get_user_personal_chat_messages import (
+        GetUserPersonalChatMessages,
+    )
+
+    class _Message:
+        def __init__(self, id):
+            self.id = id
+
+    class _Client:
+        def __init__(self):
+            self.asked = []
+
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputUserSelf()
+
+        async def invoke(self, query, *args, **kwargs):
+            self.asked.append(query.max_id)
+            return [_Message(i) for i in range(26, 6, -1)]
+
+    async def parse_messages(client, history, **kwargs):
+        return history
+
+    monkeypatch.setattr(utils, "parse_messages", parse_messages)
+
+    client = _Client()
+    got = [
+        message.id
+        async for message in GetUserPersonalChatMessages.get_user_personal_chat_messages(
+            client, "me"
+        )
+    ]
+
+    assert len(got) == 20
+    assert client.asked == [0], (
+        "messages.getPersonalChannelHistory answers with at most the 20 most "
+        "recent messages and returns nothing for a max_id below that window, "
+        "so asking a second time costs a round trip and can only come back "
+        f"empty; it asked {len(client.asked)} times"
+    )

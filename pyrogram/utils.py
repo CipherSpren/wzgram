@@ -419,7 +419,25 @@ def get_peer_id(peer: Union[raw.base.Peer, raw.base.InputPeer, raw.base.Requeste
     raise ValueError(f"Peer type invalid: {peer}")
 
 
+async def resolve_peer_id(client: "pyrogram.Client", peer: Union[int, str]) -> int:
+    """Get the non-raw peer id for whatever the caller passed.
+
+    ``resolve_peer`` answers "me" and "self" with ``InputPeerSelf``, which carries
+    no id at all, so :meth:`get_peer_id` cannot name it and anything filed by id
+    has to ask the session who it is signed in as.
+    """
+    resolved = await client.resolve_peer(peer)
+
+    if isinstance(resolved, raw.types.InputPeerSelf):
+        return await client.storage.user_id()
+
+    return get_peer_id(resolved)
+
+
 def get_peer_type(peer_id: int) -> str:
+    if peer_id is None:
+        raise ValueError(f"Peer id invalid: {peer_id}")
+
     if peer_id < 0:
         if -MAX_CHAT_ID <= peer_id:
             return "chat"
@@ -506,8 +524,13 @@ def get_file_name(
     if file_name:
         return file_name
 
-    if isinstance(media, io.BytesIO):
-        return getattr(media, "name", fallback) or fallback
+    if hasattr(media, "read"):
+        name = getattr(media, "name", None)
+
+        return name if isinstance(name, str) and name else fallback
+
+    if not isinstance(media, (str, pathlib.PurePath)):
+        return fallback
 
     return pathlib.Path(media).name or fallback
 
