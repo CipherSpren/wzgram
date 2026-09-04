@@ -173,10 +173,37 @@ class TestMemoryStorage:
 
         s = await storage.export_session_string()
         assert isinstance(s, str)
-        assert len(s) == 395
+        assert len(s) == 438
         assert s.startswith("WZ_")
 
         await storage.close()
+
+    @pytest.mark.asyncio
+    async def test_export_session_string_survives_an_ipv6_address(self):
+        address = "2001:067c:04e8:f004:0000:0000:0000:000b"
+
+        storage = MemoryStorage(":memory:")
+        await storage.open()
+        await storage.dc_id(4)
+        await storage.api_id(12345)
+        await storage.test_mode(False)
+        await storage.auth_key(b"\x11" * 256)
+        await storage.user_id(999)
+        await storage.is_bot(False)
+        await storage.date(0)
+        await storage.server_address(address)
+        await storage.port(443)
+
+        s = await storage.export_session_string()
+        await storage.close()
+
+        imported = MemoryStorage(":memory:")
+        await imported.open()
+        await imported.load_session_string(s)
+
+        assert await imported.server_address() == address
+
+        await imported.close()
 
     @pytest.mark.asyncio
     async def test_server_address_and_port(self):
@@ -291,6 +318,56 @@ class TestSQLiteStoragePersistence:
             assert await storage.update_state() == [(1, 2, 3, 4, 5)]
         finally:
             await storage.close()
+
+
+class TestSQLiteStorageClosedGuards:
+    """A stopping client can leave update tasks in flight past ``close()``.
+
+    ``Session.stop()`` cancels the receive and packet tasks but never awaits
+    the ``_run_update`` tasks, so they can reach storage after
+    ``Client.disconnect()`` has already set ``conn`` to ``None``.
+    """
+
+    @staticmethod
+    async def _closed_storage(tmp_path):
+        storage = SQLiteStorage("closed", workdir=tmp_path)
+        await storage.open()
+        await storage.update_peers([(123, 456, "user", "+1234567890")])
+        await storage.close()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_writes_after_close_are_a_no_op(self, tmp_path):
+        storage = await self._closed_storage(tmp_path)
+
+        await storage.update_state((1, 100, 0, 1000, 5))
+        await storage.update_peers([(321, 654, "user", "+9876543210")])
+        await storage.update_usernames([(321, ["bob"])])
+
+    @pytest.mark.asyncio
+    async def test_state_read_after_close_returns_no_states(self, tmp_path):
+        storage = await self._closed_storage(tmp_path)
+
+        assert await storage.update_state() == []
+
+    @pytest.mark.asyncio
+    async def test_uncached_peer_reads_after_close_raise(self, tmp_path):
+        storage = await self._closed_storage(tmp_path)
+
+        with pytest.raises(ConnectionError):
+            await storage.get_peer_by_id(999)
+
+        with pytest.raises(ConnectionError):
+            await storage.get_peer_by_username("bob")
+
+        with pytest.raises(ConnectionError):
+            await storage.get_peer_by_phone_number("+1234567890")
+
+    @pytest.mark.asyncio
+    async def test_cached_peer_still_resolves_after_close(self, tmp_path):
+        storage = await self._closed_storage(tmp_path)
+
+        assert (await storage.get_peer_by_id(123)).user_id == 123
 
 
 AUTH_KEY = b"K" * 256

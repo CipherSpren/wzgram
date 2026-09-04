@@ -1408,13 +1408,13 @@ async def test_get_users_survives_an_answer_the_server_left_short():
 
     client = _Client()
 
-    assert await client.get_users("durov") is None, (
-        "a peer the server declined to answer for is absent, not an IndexError"
-    )
+    with pytest.raises(ValueError):
+        await client.get_users("durov")
+
     assert (await client.get_users("someone")).id == 2, "a real user still parses"
-    assert [u.id for u in await client.get_users(["durov", "someone"])] == [2], (
-        "the iterable form still returns what came back, as it always has"
-    )
+
+    with pytest.raises(ValueError):
+        await client.get_users(["durov", "someone"])
 
 
 async def test_a_monoforum_message_still_asks_for_its_direct_messages_topic():
@@ -2533,6 +2533,7 @@ def _channel_photos_client(pages, chat_photo_id):
 
     class _Client:
         searches = []
+        me = SimpleNamespace(is_bot=False)
 
         async def resolve_peer(self, chat_id):
             return raw.types.InputPeerChannel(channel_id=1, access_hash=0)
@@ -2915,3 +2916,375 @@ async def test_a_personal_chat_history_asks_the_server_once(monkeypatch):
         "so asking a second time costs a round trip and can only come back "
         f"empty; it asked {len(client.asked)} times"
     )
+
+
+def test_every_get_messages_call_in_the_types_uses_a_real_parameter():
+    """Chat._parse_full_chat, _parse_full_user and User._parse_full asked for the
+    pinned message with ``pinned=True``, which get_messages has never accepted, so
+    get_chat raised TypeError on any private chat or basic group with a pin.
+    """
+
+    import inspect
+    import re
+    from pathlib import Path
+
+    from pyrogram.methods.messages.get_messages import GetMessages
+
+    accepted = set(inspect.signature(GetMessages.get_messages).parameters)
+    root = Path(pyrogram.__file__).parent / "types"
+    bad = []
+
+    for path in root.rglob("*.py"):
+        for call in re.finditer(r"client\.get_messages\(([^)]*)\)", path.read_text(encoding="utf-8")):
+            for kw in re.findall(r"(\w+)\s*=", call.group(1)):
+                if kw not in accepted:
+                    bad.append(f"{path.relative_to(root)}: {kw}")
+
+    assert not bad, bad
+
+
+async def test_joining_a_chat_unwraps_the_layer_229_result():
+    """channels.joinChannel and messages.importChatInvite answer with
+    messages.ChatInviteJoinResult since layer 229; the Ok variant wraps the old
+    Updates. join_chat still read .chats[0] off the wrapper and raised
+    AttributeError after every successful join.
+    """
+
+    from pyrogram import raw
+    from pyrogram.methods.chats.join_chat import JoinChat
+
+    channel = raw.types.Channel(id=7, title="t", photo=raw.types.ChatPhotoEmpty(), date=0, megagroup=True, usernames=[], restriction_reason=[])
+
+    class _Client(JoinChat):
+        INVITE_LINK_RE = pyrogram.Client.INVITE_LINK_RE
+
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerChannel(channel_id=7, access_hash=0)
+
+        async def invoke(self, query, *args, **kwargs):
+            return raw.types.messages.ChatInviteJoinResultOk(
+                updates=raw.types.Updates(updates=[], users=[], chats=[channel], date=0, seq=0)
+            )
+
+    chat = await _Client().join_chat("somegroup")
+
+    assert chat.id == -1000000000007
+    assert chat.title == "t"
+
+
+async def test_the_contacts_member_filter_carries_its_query():
+    """channelParticipantsContacts requires q; the filter was not in the
+    queryable list, so filter.value() was called without it and raised TypeError.
+    """
+
+    from pyrogram import enums, raw
+    from pyrogram.methods.chats.get_chat_members import get_chunk
+
+    sent = {}
+
+    class _Client:
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerChannel(channel_id=1, access_hash=0)
+
+        async def invoke(self, query, *args, **kwargs):
+            sent["filter"] = query.filter  # noqa
+
+            return raw.types.channels.ChannelParticipants(count=0, participants=[], chats=[], users=[])
+
+    await get_chunk(_Client(), 1, 0, enums.ChatMembersFilter.CONTACTS, 10, "")
+
+    assert isinstance(sent["filter"], raw.types.ChannelParticipantsContacts)
+    assert sent["filter"].q == ""
+
+
+async def test_a_formatted_poll_question_writes_its_entities():
+    """A FormattedText question, explanation or description put its MessageEntity
+    objects straight into the raw poll without awaiting write(), so the request
+    failed to serialise: expected a bytes-like object, coroutine found.
+    """
+
+    from unittest.mock import AsyncMock
+
+    from pyrogram import enums, raw, types
+    from pyrogram.methods.messages.send_poll import SendPoll
+
+    captured = {}
+
+    async def invoke(query, *args, **kw):
+        captured["query"] = query
+
+        return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+
+    client = AsyncMock()
+    client.invoke = invoke
+    client.resolve_peer = AsyncMock(return_value=raw.types.InputPeerSelf())
+    client.rnd_id = lambda: 1
+    client.parser.parse = AsyncMock(return_value={"message": "x", "entities": []})
+
+    bold = [types.MessageEntity(type=enums.MessageEntityType.BOLD, offset=0, length=1)]
+
+    await SendPoll.send_poll(
+        client,
+        chat_id=1,
+        question=types.FormattedText(text="Q?", entities=bold),
+        options=["a", "b"],
+        type=enums.PollType.QUIZ,
+        correct_option_id=0,
+        explanation=types.FormattedText(text="why", entities=bold),
+        description=types.FormattedText(text="d", entities=bold),
+    )
+
+    query = captured["query"]
+
+    assert isinstance(query.media.poll.question.entities[0], raw.types.MessageEntityBold)
+    assert isinstance(query.media.solution_entities[0], raw.types.MessageEntityBold)
+    assert isinstance(query.entities[0], raw.types.MessageEntityBold)
+    query.write()
+
+
+def _input_photo_from_file_id(*args, **kwargs):
+    from pyrogram import raw
+
+    _input_photo_from_file_id.calls.append((args, kwargs))
+
+    return raw.types.InputMediaPhoto(id=raw.types.InputPhoto(id=1, access_hash=1, file_reference=b""))
+
+
+_input_photo_from_file_id.calls = []
+
+
+def _sending_client(captured):
+    from unittest.mock import AsyncMock
+
+    from pyrogram import raw
+
+    async def invoke(query, *args, **kw):
+        captured["query"] = query
+
+        return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+
+    client = AsyncMock()
+    client.invoke = invoke
+    client.resolve_peer = AsyncMock(return_value=raw.types.InputPeerSelf())
+    client.rnd_id = lambda: 1
+    client.parser.parse = AsyncMock(return_value={"message": "plain", "entities": None})
+
+    return client
+
+
+async def test_a_media_group_carries_explicit_caption_entities(monkeypatch):
+    """send_media_group parsed only caption + parse_mode and never looked at the
+    caption_entities every InputMedia accepts, so explicit entities were dropped.
+    """
+
+    from pyrogram import enums, raw, types, utils
+    from pyrogram.methods.messages.send_media_group import SendMediaGroup
+
+    monkeypatch.setattr(utils, "get_input_media_from_file_id", _input_photo_from_file_id)
+    captured = {}
+    client = _sending_client(captured)
+    bold = [types.MessageEntity(type=enums.MessageEntityType.BOLD, offset=0, length=2)]
+
+    await SendMediaGroup.send_media_group(
+        client, 1, [types.InputMediaPhoto("AgACAgfake", caption="hi", caption_entities=bold)]
+    )
+
+    single = captured["query"].multi_media[0]
+
+    assert single.message == "hi"
+    assert isinstance(single.entities[0], raw.types.MessageEntityBold)
+
+
+async def test_copying_a_media_group_keeps_the_source_formatting(monkeypatch):
+    """copy_media_group fed the plain caption of each source message to the
+    markdown parser instead of forwarding its caption_entities, so bold and
+    italic vanished and any literal markup character was reinterpreted.
+    """
+
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from pyrogram import enums, raw, types, utils
+    from pyrogram.methods.messages.copy_media_group import CopyMediaGroup
+
+    monkeypatch.setattr(utils, "get_input_media_from_file_id", _input_photo_from_file_id)
+    captured = {}
+    client = _sending_client(captured)
+    bold = [types.MessageEntity(type=enums.MessageEntityType.BOLD, offset=0, length=3)]
+    source = SimpleNamespace(
+        photo=SimpleNamespace(file_id="AgACAgfake"), audio=None, document=None, video=None,
+        caption="one_two", caption_entities=bold,
+    )
+    client.get_media_group = AsyncMock(return_value=[source])
+
+    await CopyMediaGroup.copy_media_group(client, 1, 2, 3)
+
+    single = captured["query"].multi_media[0]
+
+    assert single.message == "one_two", "the caption is forwarded verbatim, not re-parsed"
+    assert isinstance(single.entities[0], raw.types.MessageEntityBold)
+
+
+async def test_a_spoiler_survives_a_send_by_file_id(monkeypatch):
+    """The upload and URL branches of every send_* passed has_spoiler, the
+    file_id branch did not (nor ttl_seconds in animation, audio and sticker), so
+    copying a spoilered video or re-sending a cached photo lost the spoiler.
+    """
+
+    from pyrogram import types, utils
+    from pyrogram.methods.messages.send_animation import SendAnimation
+    from pyrogram.methods.messages.send_media_group import SendMediaGroup
+    from pyrogram.methods.messages.send_photo import SendPhoto
+
+    monkeypatch.setattr(utils, "get_input_media_from_file_id", _input_photo_from_file_id)
+    _input_photo_from_file_id.calls.clear()
+    client = _sending_client({})
+
+    await SendPhoto.send_photo(client, 1, "AgACAgfake", has_spoiler=True)
+    await SendAnimation.send_animation(client, 1, "CgACAgfake", has_spoiler=True, ttl_seconds=5)
+    await SendMediaGroup.send_media_group(client, 1, [types.InputMediaPhoto("AgACAgfake", has_spoiler=True)])
+
+    kwargs = [call[1] for call in _input_photo_from_file_id.calls]
+
+    assert [k.get("has_spoiler") for k in kwargs] == [True, True, True]
+    assert kwargs[1]["ttl_seconds"] == 5
+
+
+async def test_a_session_string_is_loaded_into_a_fresh_session_file(tmp_path):
+    """Client handed the session string to an explicit storage engine, but only
+    the in-memory branch of SQLiteStorage.open loaded it; a fresh session file
+    (FileStorage, or SQLiteStorage with in_memory=False) came up with no auth
+    key and start() fell into the phone-number prompt.
+    """
+
+    from pyrogram.storage.file_storage import FileStorage
+    from pyrogram.storage.memory_storage import MemoryStorage
+    from pyrogram.storage.sqlite_storage import SQLiteStorage
+
+    source = MemoryStorage(":memory:")
+    await source.open()
+    await source.dc_id(2)
+    await source.api_id(1)
+    await source.test_mode(False)
+    await source.auth_key(b"\x07" * 256)
+    await source.user_id(4242)
+    await source.is_bot(False)
+    await source.port(443)
+    await source.server_address("149.154.167.51")
+    string = await source.export_session_string()
+    await source.close()
+
+    for storage in (
+        FileStorage("fresh_file", workdir=tmp_path),
+        SQLiteStorage("fresh_sqlite", workdir=tmp_path, session_string=string),
+    ):
+        storage.session_string = string
+        await storage.open()
+
+        assert await storage.user_id() == 4242, type(storage).__name__
+        assert await storage.auth_key() == b"\x07" * 256, type(storage).__name__
+
+        await storage.close()
+
+
+async def test_downloading_a_story_hands_its_media_to_download_media():
+    """Story.download passed the Story itself as ``message``; download_media only
+    unwraps a Message, so it fell through to ``media.file_id`` and raised
+    AttributeError - taking Story.copy and copy_story down with it.
+    """
+
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from pyrogram import types
+
+    client = SimpleNamespace(download_media=AsyncMock(return_value="path"))
+    photo = SimpleNamespace(file_id="AgACAgfake")
+    story = types.Story(client=client, id=1, photo=photo)
+
+    assert await story.download() == "path"
+    assert client.download_media.await_args.kwargs["message"] is photo
+
+    with pytest.raises(ValueError):
+        await types.Story(client=client, id=2).download()
+
+
+def test_a_chosen_inline_result_keeps_a_64_bit_inline_message_id():
+    """ChosenInlineResult packed only the 32-bit inputBotInlineMessageID by hand
+    and left inline_message_id as None for the inputBotInlineMessageID64 the
+    server sends now, so a bot could never edit the message it just placed.
+    """
+
+    from pyrogram import raw, types, utils
+
+    msg_id = raw.types.InputBotInlineMessageID64(dc_id=2, owner_id=3, id=4, access_hash=5)
+    update = raw.types.UpdateBotInlineSend(user_id=1, query="q", id="r", msg_id=msg_id)
+
+    result = types.ChosenInlineResult._parse(None, update, {1: raw.types.User(id=1, usernames=[], restriction_reason=[])})
+
+    assert result.inline_message_id == utils.pack_inline_message_id(msg_id)
+    assert utils.unpack_inline_message_id(result.inline_message_id) == msg_id
+
+
+async def test_a_client_throttles_itself_only_when_it_was_asked_to():
+    """The client-side limiter used to be built unconditionally, so every invoke()
+    paid a token bucket the caller never asked for: broadcasts serialised at the
+    per-category rate on top of a 30/s global bucket, and seven TokenBuckets plus
+    their locks were allocated per client. It is opt-in now, and the four sites
+    that reach for it -- invoke, the dispatcher, initialize and terminate -- all
+    have to keep tolerating None.
+    """
+
+    from types import SimpleNamespace
+
+    from pyrogram import raw
+    from pyrogram.methods.rate_limiter import RateLimiter
+
+    def a_client(**kwargs):
+        return pyrogram.Client("ratelimit", api_id=1, api_hash="x", in_memory=True, **kwargs)
+
+    assert a_client().rate_limiter is None, (
+        "a client nobody asked to throttle must not build a limiter"
+    )
+
+    opted_in = a_client(rate_limits={})
+    assert isinstance(opted_in.rate_limiter, RateLimiter), (
+        "an empty dict is still a request for the limiter, at the built-in defaults"
+    )
+    assert opted_in.rate_limiter._buckets["message"].rate == 20.0
+
+    tuned = a_client(rate_limits={"message": {"rate": 1.0}})
+    assert tuned.rate_limiter._buckets["message"].rate == 1.0, "the override reaches its bucket"
+    assert tuned.rate_limiter._buckets["media"].rate == 5.0, "the rest keep their defaults"
+
+    # invoke() must not reach the limiter at all when there is none to reach.
+    acquired = []
+
+    async def recording_acquire(self, category, tokens=1.0):
+        acquired.append(category)
+
+    async def run_invoke(client):
+        client.is_connected = True
+        client.session = SimpleNamespace(invoke=lambda *a, **k: _answer())
+        client.fetch_peers = _nothing
+        await client.invoke(raw.functions.help.GetConfig())
+
+    async def _answer():
+        return raw.types.Config
+
+    async def _nothing(*args, **kwargs):
+        return None
+
+    original = RateLimiter.acquire
+    RateLimiter.acquire = recording_acquire
+
+    try:
+        await run_invoke(a_client())
+        assert acquired == [], "an opted-out client must not wait on a bucket"
+
+        await run_invoke(a_client(rate_limits={}))
+        assert acquired == ["query"], (
+            "an opted-in client still classifies the call and waits on its bucket"
+        )
+    finally:
+        RateLimiter.acquire = original

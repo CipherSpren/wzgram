@@ -232,7 +232,7 @@ class SendMediaGroup:
                             spoiler=i.has_spoiler
                         )
                     else:
-                        media = utils.get_input_media_from_file_id(i.media, FileType.PHOTO)
+                        media = utils.get_input_media_from_file_id(i.media, FileType.PHOTO, has_spoiler=i.has_spoiler)
                 else:
                     media = await self.invoke(
                         raw.functions.messages.UploadMedia(
@@ -356,7 +356,7 @@ class SendMediaGroup:
                         )
                     else:
                         media = utils.get_input_media_from_file_id(
-                            i.media, FileType.VIDEO,
+                            i.media, FileType.VIDEO, has_spoiler=i.has_spoiler,
                             video_cover=vcover_file,
                             video_start_timestamp=i.video_start_timestamp
                         )
@@ -411,7 +411,7 @@ class SendMediaGroup:
                                             performer=i.performer,
                                             title=i.title
                                         ),
-                                        raw.types.DocumentAttributeFilename(file_name=os.path.basename(i.media))
+                                        raw.types.DocumentAttributeFilename(file_name=utils.get_file_name(i.media, file_name=i.file_name, fallback="audio.mp3"))
                                     ]
                                 )
                             )
@@ -457,7 +457,7 @@ class SendMediaGroup:
                                         performer=i.performer,
                                         title=i.title
                                     ),
-                                    raw.types.DocumentAttributeFilename(file_name=getattr(i.media, "name", "audio.mp3"))
+                                    raw.types.DocumentAttributeFilename(file_name=utils.get_file_name(i.media, file_name=i.file_name, fallback="audio.mp3"))
                                 ]
                             )
                         )
@@ -480,8 +480,9 @@ class SendMediaGroup:
                                     mime_type=self.guess_mime_type(i.media) or "application/zip",
                                     file=await self.save_file(i.media, progress=progress, progress_args=progress_args),
                                     thumb=await self.save_file(i.thumb, progress=progress, progress_args=progress_args),
+                                    force_file=True if i.disable_content_type_detection is None else i.disable_content_type_detection,
                                     attributes=[
-                                        raw.types.DocumentAttributeFilename(file_name=os.path.basename(i.media))
+                                        raw.types.DocumentAttributeFilename(file_name=utils.get_file_name(i.media, file_name=i.file_name, fallback="file.zip"))
                                     ]
                                 )
                             )
@@ -523,8 +524,9 @@ class SendMediaGroup:
                                 ) or "application/zip",
                                 file=await self.save_file(i.media, progress=progress, progress_args=progress_args),
                                 thumb=await self.save_file(i.thumb, progress=progress, progress_args=progress_args),
+                                force_file=True if i.disable_content_type_detection is None else i.disable_content_type_detection,
                                 attributes=[
-                                    raw.types.DocumentAttributeFilename(file_name=getattr(i.media, "name", "file.zip"))
+                                    raw.types.DocumentAttributeFilename(file_name=utils.get_file_name(i.media, file_name=i.file_name, fallback="file.zip"))
                                 ]
                             )
                         )
@@ -544,7 +546,7 @@ class SendMediaGroup:
                 raw.types.InputSingleMedia(
                     media=media,
                     random_id=self.rnd_id(),
-                    **await self.parser.parse(i.caption, i.parse_mode)
+                    **await utils.parse_text_entities(self, i.caption, i.parse_mode, i.caption_entities)
                 )
             )
 

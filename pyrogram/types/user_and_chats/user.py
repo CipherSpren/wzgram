@@ -699,7 +699,7 @@ class User(Object, Update):
             inline_query_placeholder=user.bot_inline_placeholder,
             can_be_edited=user.bot_can_edit,
             can_be_added_to_attachment_menu=user.bot_attach_menu,
-            can_join_groups=user.bot_nochats,
+            can_join_groups=not user.bot_nochats if user.bot else None,
             can_read_all_group_messages=user.bot_chat_history,
             can_connect_to_business=user.bot_business,
             can_manage_bots=user.bot_can_manage_bots,
@@ -746,7 +746,7 @@ class User(Object, Update):
         # parsed_user.bot_forum_view
 
         if user.pinned_msg_id:
-            parsed_user.pinned_message = await client.get_messages(chat_id=parsed_user.id, pinned=True)
+            parsed_user.pinned_message = await client.get_messages(chat_id=parsed_user.id, message_ids=user.pinned_msg_id)
 
         parsed_user.folder_id = user.folder_id
         parsed_user.message_auto_delete_time = user.ttl_period

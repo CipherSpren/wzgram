@@ -18,6 +18,7 @@
 
 import asyncio
 import base64
+import binascii
 import functools
 import hashlib
 import io
@@ -176,7 +177,8 @@ async def get_input_stargift(client: "pyrogram.Client", owned_gift_id: str) -> "
 async def parse_messages(
     client: "pyrogram.Client",
     messages: Union["raw.base.messages.Messages", "raw.base.Updates"],
-    replies: int = 1
+    replies: int = 1,
+    is_scheduled: bool = False
 ) -> List["types.Message"]:
     users = {i.id: i for i in getattr(messages, "users", [])}
     chats = {i.id: i for i in getattr(messages, "chats", [])}
@@ -204,7 +206,8 @@ async def parse_messages(
                     users=users,
                     chats=chats,
                     topics=topics,
-                    replies=0
+                    replies=0,
+                    is_scheduled=is_scheduled
                 )
             )
 
@@ -345,26 +348,31 @@ def pack_inline_message_id(msg_id: "raw.base.InputBotInlineMessageID"):
 
 
 def unpack_inline_message_id(inline_message_id: str) -> "raw.base.InputBotInlineMessageID":
-    padded = inline_message_id + "=" * (-len(inline_message_id) % 4)
-    decoded = base64.urlsafe_b64decode(padded)
+    try:
+        padded = inline_message_id + "=" * (-len(inline_message_id) % 4)
+        decoded = base64.urlsafe_b64decode(padded)
 
-    if len(decoded) == 20:
-        unpacked = struct.unpack("<iqq", decoded)
+        if len(decoded) == 20:
+            unpacked = struct.unpack("<iqq", decoded)
 
-        return raw.types.InputBotInlineMessageID(
-            dc_id=unpacked[0],
-            id=unpacked[1],
-            access_hash=unpacked[2]
-        )
-    else:
-        unpacked = struct.unpack("<iqiq", decoded)
+            return raw.types.InputBotInlineMessageID(
+                dc_id=unpacked[0],
+                id=unpacked[1],
+                access_hash=unpacked[2]
+            )
+        elif len(decoded) == 24:
+            unpacked = struct.unpack("<iqiq", decoded)
 
-        return raw.types.InputBotInlineMessageID64(
-            dc_id=unpacked[0],
-            owner_id=unpacked[1],
-            id=unpacked[2],
-            access_hash=unpacked[3]
-        )
+            return raw.types.InputBotInlineMessageID64(
+                dc_id=unpacked[0],
+                owner_id=unpacked[1],
+                id=unpacked[2],
+                access_hash=unpacked[3]
+            )
+    except (struct.error, IndexError, TypeError, binascii.Error) as e:
+        raise ValueError(f"Invalid inline message id: {inline_message_id!r}") from e
+
+    raise ValueError(f"Invalid inline message id: {inline_message_id!r}")
 
 ZERO_SECRET_CHAT_ID = -2000000000000
 ZERO_CHANNEL_ID = -1000000000000

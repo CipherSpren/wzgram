@@ -28,6 +28,7 @@ import shutil
 import sys
 import weakref
 import time
+from collections import OrderedDict
 from concurrent.futures.thread import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -363,7 +364,10 @@ class Client(Methods):
             Rate limits for different categories of API calls. Each category can have "rate" (calls/sec) and
             "burst" (max burst). Available categories: "message", "media", "query", "admin", "bulk", "account",
             "global". Example: ``{"message": {"rate": 20, "burst": 30}}``.
-            Defaults to built-in per-category defaults (20 msg/s, 5 media/s, etc.).
+            Passing any value (even an empty dict) enables the client-side rate limiter with the given limits
+            (or the built-in per-category defaults, 20 msg/s, 5 media/s, etc.). The limiter is **disabled by
+            default**; leave this ``None`` to match upstream Pyrogram behaviour and send without client-side
+            throttling, letting Telegram's server-side FloodWait handling (see *sleep_threshold*) manage the pace.
 
         auto_no_updates (``bool``, *optional*):
             Pass True to automatically wrap read-only and non-critical API calls with InvokeWithoutUpdates,
@@ -412,6 +416,7 @@ class Client(Methods):
     MAX_CONCURRENT_TRANSMISSIONS = 16
     MAX_MESSAGE_CACHE_SIZE = 1000
     MAX_TOPIC_CACHE_SIZE = 1000
+    MAX_BUSINESS_CONNECTIONS = 512
     LISTENER_TIMEOUT = 300
     UNALLOWED_CLICK_ALERT_TEXT = "You are not expected to click this button."
 
@@ -480,7 +485,6 @@ class Client(Methods):
         self.lang_code = lang_code.lower()
         self.system_lang_code = system_lang_code.lower()
 
-
         self.ipv6 = ipv6
         self.proxy = proxy
         self.test_mode = test_mode
@@ -517,7 +521,7 @@ class Client(Methods):
         self.protocol_factory = protocol_factory
 
         from pyrogram.methods.rate_limiter import RateLimiter
-        self.rate_limiter = RateLimiter(rate_limits) if rate_limits else RateLimiter()
+        self.rate_limiter = RateLimiter(rate_limits) if rate_limits is not None else None
         self.auto_no_updates = auto_no_updates
 
         self.executor = get_handler_executor()
@@ -556,7 +560,7 @@ class Client(Methods):
 
         self.session: Optional[Session] = None
 
-        self.business_connections = {}
+        self.business_connections: "OrderedDict[str, int]" = OrderedDict()
 
         self.sessions = {}
         self.media_sessions = {}
@@ -621,15 +625,6 @@ class Client(Methods):
     @loop.setter
     def loop(self, value: asyncio.AbstractEventLoop):
         self._loop = value
-
-    def __enter__(self):
-        return self.start()
-
-    def __exit__(self, *args):
-        try:
-            self.stop()
-        except ConnectionError:
-            pass
 
     async def __aenter__(self):
         return await self.start()
@@ -1176,7 +1171,7 @@ class Client(Methods):
         if session_empty:
             if not self.api_id or not self.api_hash:
                 raise AttributeError("The API key is required for new authorizations. "
-                                     "More info: https://rjriajul.github.io/wzgram/start/auth")
+                                     "More info: https://wzgram.com/start/auth")
 
             await self.storage.api_id(self.api_id)
 
@@ -1446,6 +1441,8 @@ class Client(Methods):
                         await func()
                     else:
                         await self.loop.run_in_executor(self.executor, func)
+                except pyrogram.StopTransmission:
+                    raise
                 except Exception as e:
                     log.warning(f"Download progress callback error: {e}")
 
@@ -1474,7 +1471,7 @@ class Client(Methods):
                 total_chunks = math.ceil((file_size - offset_bytes) / chunk_size)
                 pool_size = min(dl_pool_size, total_chunks)
                 total_workers = min(dl_pool_size * dl_workers_per_session, total_chunks)
-                needs_pool = pool_size >= 1
+                needs_pool = min(total, total_chunks) > 1
                 if needs_pool:
                     pool_task = asyncio.ensure_future(self._get_media_session_pool(dc_id, pool_size))
                     pool_task.add_done_callback(lambda t: t.cancelled() or t.exception())
@@ -1690,12 +1687,12 @@ class Client(Methods):
                         buffer_slots.release_all()
 
                 elif isinstance(r, raw.types.upload.FileCdnRedirect):
-
                     cdn_session = await self.get_session(
                         r.dc_id, is_media=True, is_cdn=True, temporary=True
                     )
                     _cdn_rate = TokenBucket(rate=dl_rate, burst=dl_burst)
                     _report_tasks = set()
+                    _stop_requested = False
 
                     try:
                         while True:
@@ -1751,6 +1748,9 @@ class Client(Methods):
 
                             await self.loop.run_in_executor(self.crypto_executor, _check_all_hashes)
 
+                            if _stop_requested:
+                                raise pyrogram.StopTransmission
+
                             yield decrypted_chunk
 
                             current += 1
@@ -1765,6 +1765,7 @@ class Client(Methods):
                                     _total = file_size
 
                                     async def report(_sent=_sent, _total=_total):
+                                        nonlocal _stop_requested
                                         try:
                                             if inspect.iscoroutinefunction(progress):
                                                 await progress(_sent, _total, *progress_args)
@@ -1775,6 +1776,8 @@ class Client(Methods):
                                                         progress, _sent, _total, *progress_args
                                                     ),
                                                 )
+                                        except pyrogram.StopTransmission:
+                                            _stop_requested = True
                                         except Exception as e:
                                             log.warning(f"CDN download progress callback error: {e}")
 
@@ -1855,6 +1858,9 @@ class Client(Methods):
                 if not connection.updates:
                     raise ValueError(f"Empty updates in GetBotBusinessConnection response for {business_connection_id}")
                 dc_id = self.business_connections[business_connection_id] = connection.updates[0].connection.dc_id
+
+                while len(self.business_connections) > self.MAX_BUSINESS_CONNECTIONS:
+                    self.business_connections.popitem(last=False)
 
         is_current_dc = await self.storage.dc_id() == dc_id
 
@@ -2112,13 +2118,17 @@ class Client(Methods):
 class Cache:
     def __init__(self, capacity: int):
         self.capacity = capacity
-        self.store = {}
+        self.store: "OrderedDict" = OrderedDict()
 
     def __getitem__(self, key):
-        return self.store.get(key, None)
+        value = self.store.pop(key, None)
+        if value is not None:
+            self.store[key] = value
+        return value
 
     def get(self, key, default=None):
-        return self.store.get(key, default)
+        value = self.__getitem__(key)
+        return value if value is not None else default
 
     def __setitem__(self, key, value):
         if key in self.store:
@@ -2127,6 +2137,5 @@ class Cache:
         self.store[key] = value
 
         if len(self.store) > self.capacity:
-            for _ in range(self.capacity // 2 + 1):
-                del self.store[next(iter(self.store))]
+            self.store.popitem(last=False)
 

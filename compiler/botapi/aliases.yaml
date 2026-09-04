@@ -22,7 +22,19 @@ botapi:
     ResponseParameters: MTProto surfaces these as typed RPCError subclasses
     InputFile: uploads take a path or a file object directly, with no wrapper type
 
-  method_rename: {}
+  method_rename:
+    setMyCommands: set_bot_commands
+    getMyCommands: get_bot_commands
+    deleteMyCommands: delete_bot_commands
+    setMyName: set_bot_name
+    getMyName: get_bot_name
+    setMyDescription: set_bot_info_description
+    getMyDescription: get_bot_info_description
+    setMyShortDescription: set_bot_info_short_description
+    getMyShortDescription: get_bot_info_short_description
+    getMyStarBalance: get_stars_balance
+    getChatMemberCount: get_chat_members_count
+    setChatAdministratorCustomTitle: set_administrator_title
 
   method_unsupported:
     getUpdates: long polling is a Bot API transport; MTProto pushes updates
@@ -276,6 +288,8 @@ botapi:
       message_effect_id: effect_id
       rich_message: rich_text
       thumbnail: thumb
+    setChatAdministratorCustomTitle:
+      custom_title: title
     sendDocument:
       disable_content_type_detection: force_document
     sendVideo:

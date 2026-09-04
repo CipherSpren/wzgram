@@ -56,7 +56,7 @@ class Story(Object, Update):
             For stories forwarded from channels, information about the original channel.
 
         forward_from_story_id (``int``, *optional*):
-            For stories forwarded from channels, identifier of the original story in the channel.
+            For forwarded stories, identifier of the original story.
 
         expire_date (:py:obj:`~datetime.datetime`, *optional*):
             Date the story will be expired.
@@ -332,14 +332,17 @@ class Story(Object, Update):
         forward_header = story.fwd_from  # type: raw.types.StoryFwdHeader
 
         if forward_header:
-            fwd_raw_peer_id = utils.get_raw_peer_id(forward_header.from_peer)
-            fwd_peer_id = utils.get_peer_id(forward_header.from_peer)
+            forward_sender_name = forward_header.from_name
+            forward_from_story_id = forward_header.story_id
 
-            if fwd_peer_id > 0:
-                forward_from = types.User._parse(client, users[fwd_raw_peer_id])
-            else:
-                forward_from_chat = types.Chat._parse_channel_chat(client, chats[fwd_raw_peer_id])
-                forward_from_story_id = forward_header.story_id
+            if forward_header.from_peer:
+                fwd_raw_peer_id = utils.get_raw_peer_id(forward_header.from_peer)
+                fwd_peer_id = utils.get_peer_id(forward_header.from_peer)
+
+                if fwd_peer_id > 0:
+                    forward_from = types.User._parse(client, users[fwd_raw_peer_id])
+                else:
+                    forward_from_chat = types.Chat._parse_channel_chat(client, chats[fwd_raw_peer_id])
 
         if story.views:
             views=getattr(story.views, "views_count", None)
@@ -383,7 +386,8 @@ class Story(Object, Update):
         }
 
         for priv in story.privacy:
-            privacy = privacy_map.get(type(priv), None)
+            if type(priv) in privacy_map:
+                privacy = privacy_map[type(priv)]
 
             if isinstance(priv, raw.types.PrivacyValueAllowUsers):
                 allowed_users = types.List(types.User._parse(client, users.get(user_id, None)) for user_id in priv.users)
@@ -2134,8 +2138,13 @@ class Story(Object, Update):
             RPCError: In case of a Telegram RPC error.
             ``ValueError``: If the message doesn't contain any downloadable media
         """
+        media = self.photo or self.video
+
+        if media is None:
+            raise ValueError("This story doesn't contain any downloadable media")
+
         return await self._client.download_media(
-            message=self,
+            message=media,
             file_name=file_name,
             in_memory=in_memory,
             block=block,

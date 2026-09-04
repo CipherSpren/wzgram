@@ -24,6 +24,18 @@ from pyrogram import raw, utils
 from pyrogram import types, enums
 
 
+class _EmptyEntities(list):
+    def __bool__(self) -> bool:
+        return True
+
+
+async def _write_entities(client: "pyrogram.Client", entities: Optional[List["types.MessageEntity"]]) -> list:
+    for entity in entities or []:
+        entity._client = client
+
+    return [await entity.write() for entity in entities or []]
+
+
 class SendPoll:
     async def send_poll(
         self: "pyrogram.Client",
@@ -269,14 +281,14 @@ class SendPoll:
 
         if isinstance(question, types.FormattedText):
             question_text = question.text
-            question_entities = question.entities or []
+            question_entities = await _write_entities(self, question.entities)
         else:
             question_text = question
             question_entities = []
 
         if isinstance(explanation, types.FormattedText):
             solution_text = explanation.text
-            solution_entities = explanation.entities or []
+            solution_entities = await _write_entities(self, explanation.entities)
         elif explanation is not None:
             solution_text, solution_entities = (await utils.parse_text_entities(
                 self, explanation, explanation_parse_mode, explanation_entities
@@ -285,9 +297,12 @@ class SendPoll:
             solution_text = None
             solution_entities = []
 
+        if solution_text is not None and not solution_entities:
+            solution_entities = _EmptyEntities()
+
         if isinstance(description, types.FormattedText):
             description_text = description.text
-            description_entities = description.entities or []
+            description_entities = await _write_entities(self, description.entities)
         else:
             description_text = description
             description_entities = []
@@ -345,7 +360,7 @@ class SendPoll:
                     ),
                     correct_answers=correct,
                     solution=solution_text,
-                    solution_entities=solution_entities or [],
+                    solution_entities=solution_entities,
                     solution_media=solution_media,
                     attached_media=attached_media,
                 ),

@@ -17,7 +17,6 @@
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
 import logging
-import os
 from pathlib import Path
 
 import aiosqlite
@@ -41,10 +40,11 @@ class FileStorage(SQLiteStorage):
 
         if not file_exists:
             await self.create()
+
+            if self.session_string:
+                await self.load_session_string(self.session_string)
+                await self.conn.commit()
         else:
             await self.update()
 
         await self.conn.execute("VACUUM")
-
-    async def delete(self):
-        os.remove(self.database)

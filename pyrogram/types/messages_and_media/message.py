@@ -1186,11 +1186,15 @@ class Message(Object, Update):
             new_chat_title = action.title
         elif isinstance(action, raw.types.MessageActionChatJoinedByLink):
             service_type = enums.MessageServiceType.NEW_CHAT_MEMBERS
-            new_chat_members = [types.User._parse(client, users[utils.get_raw_peer_id(message.from_id)])]
+            joined_peer_id = utils.get_raw_peer_id(message.from_id)
+            if joined_peer_id in users:
+                new_chat_members = [types.User._parse(client, users[joined_peer_id])]
             chat_join_type = enums.ChatJoinType.BY_LINK
         elif isinstance(action, raw.types.MessageActionChatJoinedByRequest):
             service_type = enums.MessageServiceType.NEW_CHAT_MEMBERS
-            new_chat_members = [types.User._parse(client, users[utils.get_raw_peer_id(message.from_id)])]
+            joined_peer_id = utils.get_raw_peer_id(message.from_id)
+            if joined_peer_id in users:
+                new_chat_members = [types.User._parse(client, users[joined_peer_id])]
             chat_join_type = enums.ChatJoinType.BY_REQUEST
         elif isinstance(action, raw.types.MessageActionChatMigrateTo):
             service_type = enums.MessageServiceType.MIGRATE_TO_CHAT_ID
@@ -1415,6 +1419,9 @@ class Message(Object, Update):
         elif isinstance(action, raw.types.MessageActionChatJoinedViaCommunity):
             service_type = enums.MessageServiceType.COMMUNITY_CHAT_JOINED
             community_chat_joined = types.CommunityChatJoined._parse(client, action, chats)
+            joined_peer_id = utils.get_raw_peer_id(message.from_id)
+            if joined_peer_id in users:
+                new_chat_members = [types.User._parse(client, users[joined_peer_id])]
 
         parsed_message = Message(
             id=message.id,
@@ -1910,7 +1917,7 @@ class Message(Object, Update):
                 client.topic_cache[(parsed_message.chat.id, parsed_message.topic.id)] = parsed_message.topic
 
         if not parsed_message.topic and parsed_message.chat.is_forum:
-            parsed_topic = client.topic_cache[(parsed_message.chat.id, parsed_message.message_thread_id)]
+            parsed_topic = client.topic_cache[(parsed_message.chat.id, parsed_message.message_thread_id or 1)]
 
             if parsed_topic:
                 parsed_message.topic = parsed_topic
@@ -2365,14 +2372,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -2747,14 +2755,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -3056,14 +3065,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -3350,14 +3360,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -3642,14 +3653,13 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -4268,14 +4278,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -4493,14 +4504,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -4716,14 +4728,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -5040,14 +5053,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -6012,14 +6026,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -6295,14 +6310,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -6653,14 +6669,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -7071,14 +7088,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -7413,14 +7431,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -7895,14 +7914,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -8137,14 +8157,15 @@ class Message(Object, Update):
         """
         if reply_parameters is None:
             reply_parameters = types.ReplyParameters(
-                message_id=self.id
+                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
+                quote=quote_text,
+                quote_entities=quote_entities
             )
 
         if quote is not None:
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -8318,7 +8339,6 @@ class Message(Object, Update):
             log.warning(
                 "`quote` parameter is deprecated and will be removed in future updates."
             )
-            quote = self.chat.type != enums.ChatType.PRIVATE
 
             if not quote:
                 reply_parameters = None
@@ -9361,7 +9381,7 @@ class Message(Object, Update):
                 quote_entities=quote_entities,
                 schedule_date=schedule_date,
                 protect_content=protect_content,
-                effect_id=self.effect_id,
+                effect_id=effect_id,
                 has_spoiler=self.has_media_spoiler if has_spoiler is None else has_spoiler,
                 show_caption_above_media=self.show_caption_above_media if show_caption_above_media is None else show_caption_above_media,
                 business_connection_id=business_connection_id,
@@ -9404,7 +9424,7 @@ class Message(Object, Update):
                     reply_markup=self.reply_markup if reply_markup is object else reply_markup,
                     video_cover=video_cover if video_cover is not None else self.video.video_cover.file_id if self.video.video_cover else None,
                     video_start_timestamp=video_start_timestamp if video_start_timestamp is not None else self.video.video_start_timestamp,
-                    effect_id=self.effect_id
+                    effect_id=effect_id
                 )
             elif self.animation:
                 file_id = self.animation.file_id
@@ -9503,8 +9523,24 @@ class Message(Object, Update):
                     allow_paid_broadcast=allow_paid_broadcast,
                     message_thread_id=message_thread_id
                 )
+            elif self.dice:
+                return await self._client.send_dice(
+                    chat_id,
+                    emoji=self.dice.emoji,
+                    disable_notification=disable_notification,
+                    message_thread_id=message_thread_id,
+                    reply_parameters=reply_parameters,
+                    schedule_date=schedule_date,
+                    protect_content=protect_content,
+                    allow_paid_broadcast=allow_paid_broadcast,
+                    paid_message_star_count=paid_message_star_count,
+                    direct_messages_topic_id=direct_messages_topic_id,
+                    effect_id=effect_id,
+                    suggested_post_parameters=suggested_post_parameters,
+                    business_connection_id=business_connection_id
+                )
             else:
-                raise ValueError("Unknown media type")
+                raise ValueError(f"Unable to copy a {self.media} message")
 
             if caption is None:
                 caption = self.caption or ""

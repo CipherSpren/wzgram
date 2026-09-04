@@ -324,7 +324,7 @@ class Session:
             self._restart_done.clear()
             try:
                 await self.stop()
-                if self.client.storage.conn is None:
+                if getattr(self.client.storage, "conn", True) is None:
                     await self.client.storage.open()
                 await self.start(max_attempts=self.MAX_RETRIES)
             finally:
@@ -404,6 +404,9 @@ class Session:
                 msg.body, (raw.types.BadMsgNotification, raw.types.BadServerSalt)
             )
 
+            if isinstance(msg.body, raw.types.BadServerSalt):
+                self.salt = msg.body.new_server_salt
+
             rejected = is_bad_notification and msg.body.error_code in (16, 17)
 
             async with self._handler_lock:
@@ -465,6 +468,7 @@ class Session:
                 continue
 
             if isinstance(msg.body, raw.types.NewSessionCreated):
+                self.salt = msg.body.server_salt
                 continue
 
             msg_id = None
