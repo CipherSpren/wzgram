@@ -48,9 +48,12 @@ class FakeClient:
     handle_download = pyrogram.Client.handle_download
     read_ahead_slots = pyrogram.Client.read_ahead_slots
     MAX_READ_AHEAD_CHUNKS = pyrogram.Client.MAX_READ_AHEAD_CHUNKS
+    MEDIA_POOL_CAP = pyrogram.Client.MEDIA_POOL_CAP
+    _media_pool = pyrogram.Client._media_pool
 
     def __init__(self, chunks):
         self.get_file_semaphore = asyncio.Semaphore(1)
+        self._media_pool_demand = {}
         self.me = SimpleNamespace(is_bot=True, is_premium=False)
         self.session = FakeSession(chunks)
 

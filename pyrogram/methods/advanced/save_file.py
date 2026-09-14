@@ -17,6 +17,7 @@
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
 import asyncio
+import contextlib
 import functools
 import inspect
 import io
@@ -32,6 +33,7 @@ import pyrogram
 from pyrogram import StopTransmission
 from pyrogram import raw
 from pyrogram.errors import RPCError
+from pyrogram.methods.rate_limiter import TokenBucket
 from pyrogram.session import Session
 
 log = logging.getLogger(__name__)
@@ -42,6 +44,7 @@ MAX_RETRIES = 16
 STALL_TIMEOUT = 900
 READ_BUFFER = 4 * 1024 * 1024
 MAX_BATCH = 4 * 1024 * 1024
+PACER_BURST = 8
 
 
 async def _stop_workers(queue: asyncio.Queue, workers: list) -> list:
@@ -200,34 +203,46 @@ class SaveFile:
             file_total_parts = int(math.ceil(file_size / part_size))
             is_big = file_size > 10 * 1024 * 1024
             if is_bot:
-                rate_limit = 40  # ~20 MiB/s
-                pool_size = min(8, POOL_SIZE) if is_big else 1
+                rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_BOT", 120))
+                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_BOT", 8)), POOL_SIZE) if is_big else 1
             elif is_premium:
-                rate_limit = 300
-                pool_size = min(14, POOL_SIZE) if is_big else 1
+                rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_PREMIUM", 300))
+                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_PREMIUM", 14)), POOL_SIZE) if is_big else 1
             else:
-                rate_limit = 50  # ~25 MiB/s
-                pool_size = min(12, POOL_SIZE) if is_big else 1
+                rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_USER", 120))
+                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_USER", 12)), POOL_SIZE) if is_big else 1
 
             is_missing_part = file_id is not None
             file_id = file_id or self.rnd_id()
             md5_sum = md5() if not is_big and not is_missing_part else None
 
             dc_id = await self.storage.dc_id()
-            pool = await self._get_media_session_pool(dc_id, pool_size)
+            pool_lease = contextlib.AsyncExitStack()
 
-            _acked = [0]
+            try:
+                pool_task = await pool_lease.enter_async_context(
+                    self._media_pool(dc_id, pool_size)
+                )
+                pool = await pool_task
 
-            n_workers = len(pool) * 2
-            queue = asyncio.Queue(n_workers)
-            budget = ReadAhead(self.read_ahead_slots)
-            workers = [
-                self.loop.create_task(worker(pool[i % len(pool)]))
-                for i in range(n_workers)
-            ]
+                if not pool:
+                    raise OSError(f"No media session available for DC {dc_id}")
+
+                _acked = [0]
+
+                n_workers = len(pool) * 2
+                queue = asyncio.Queue(n_workers)
+                budget = ReadAhead(self.read_ahead_slots)
+                workers = [
+                    self.loop.create_task(worker(pool[i % len(pool)]))
+                    for i in range(n_workers)
+                ]
+            except BaseException:
+                await pool_lease.aclose()
+                raise
+
             next_batch_task = None
-            _next_dispatch = 0.0
-            _dispatch_interval = 1.0 / rate_limit
+            _pacer = TokenBucket(rate=rate_limit, burst=PACER_BURST)
             _stalled_since = 0.0
 
             async def _report(parts: int) -> None:
@@ -287,10 +302,7 @@ class SaveFile:
                                 file_id=file_id, file_part=file_part, bytes=chunk
                             )
 
-                        _now = time.monotonic()
-                        if _now < _next_dispatch:
-                            await asyncio.sleep(_next_dispatch - _now)
-                        _next_dispatch = max(time.monotonic(), _next_dispatch) + _dispatch_interval
+                        await _pacer.acquire()
 
                         await budget.acquire()
 
@@ -373,6 +385,7 @@ class SaveFile:
 
                 await _stop_workers(queue, workers)
                 budget.release_all()
+                await pool_lease.aclose()
 
                 if isinstance(path, (str, PurePath)):
                     fp.close()

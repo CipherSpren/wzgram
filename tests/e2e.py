@@ -163,7 +163,6 @@ def make_client(dc, name="e2e", pool=None, sessions=3, premium=False, bot=False)
 
     client.get_session = get_session
     client._get_media_session_pool = get_pool
-    client.media_pool = pool
     return client
 
 

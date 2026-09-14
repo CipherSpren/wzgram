@@ -17,6 +17,7 @@
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
 import asyncio
+import contextlib
 import functools
 import inspect
 import logging
@@ -413,6 +414,7 @@ class Client(Methods):
     MAX_READ_AHEAD_CHUNKS = int(os.environ.get("WZGRAM_MAX_READ_AHEAD", 64))
 
     DOWNLOAD_POOL_SIZE = 4  # fallback default
+    MEDIA_POOL_CAP = 16
     MAX_CONCURRENT_TRANSMISSIONS = 16
     MAX_MESSAGE_CACHE_SIZE = 1000
     MAX_TOPIC_CACHE_SIZE = 1000
@@ -565,6 +567,7 @@ class Client(Methods):
         self.sessions = {}
         self.media_sessions = {}
         self.media_session_pools = {}
+        self._media_pool_demand = {}
         self._session_locks = {}
         self._media_sessions_locks = {}
 
@@ -1447,34 +1450,35 @@ class Client(Methods):
                     log.warning(f"Download progress callback error: {e}")
 
             dc_id = file_id.dc_id
+            pool_lease = contextlib.AsyncExitStack()
 
             try:
                 _is_bot = self.me.is_bot if hasattr(self.me, 'is_bot') else False
                 _is_premium = self.me.is_premium if hasattr(self.me, 'is_premium') else False
 
                 if _is_bot:
-                    dl_pool_size = 4
-                    dl_workers_per_session = 3
-                    dl_rate = 20
-                    dl_burst = 10
+                    dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_BOT", 5))
+                    dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_BOT", 3))
+                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_BOT", 100))
+                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_BOT", 25))
                 elif _is_premium:
-                    dl_pool_size = 3
-                    dl_workers_per_session = 6
-                    dl_rate = 100
-                    dl_burst = 50
+                    dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_PREMIUM", 6))
+                    dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_PREMIUM", 4))
+                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_PREMIUM", 150))
+                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_PREMIUM", 35))
                 else:
-                    dl_pool_size = 3
-                    dl_workers_per_session = 4
-                    dl_rate = 30
-                    dl_burst = 15
+                    dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_USER", 5))
+                    dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_USER", 3))
+                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_USER", 100))
+                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_USER", 25))
 
                 total_chunks = math.ceil((file_size - offset_bytes) / chunk_size)
                 pool_size = min(dl_pool_size, total_chunks)
-                total_workers = min(dl_pool_size * dl_workers_per_session, total_chunks)
                 needs_pool = min(total, total_chunks) > 1
                 if needs_pool:
-                    pool_task = asyncio.ensure_future(self._get_media_session_pool(dc_id, pool_size))
-                    pool_task.add_done_callback(lambda t: t.cancelled() or t.exception())
+                    pool_task = await pool_lease.enter_async_context(
+                        self._media_pool(dc_id, pool_size)
+                    )
 
                 session = await self.get_session(dc_id, is_media=True)
 
@@ -1534,13 +1538,14 @@ class Client(Methods):
                         return
 
                     total_chunks = math.ceil((file_size - offset_bytes) / chunk_size)
-                    pool_size = min(dl_pool_size, total_chunks)
-                    total_workers = min(dl_pool_size * dl_workers_per_session, total_chunks)
                     if needs_pool:
                         pool = await pool_task
                     else:
                         pool = []
                     n_sessions = len(pool)
+                    total_workers = min(
+                        dl_pool_size * dl_workers_per_session, total_chunks
+                    )
 
                     work = asyncio.Queue()
                     chunks_needed = min(
@@ -1693,6 +1698,35 @@ class Client(Methods):
                     _cdn_rate = TokenBucket(rate=dl_rate, burst=dl_burst)
                     _report_tasks = set()
                     _stop_requested = False
+                    _cdn_hashes = {h.offset: h for h in r.file_hashes}
+
+                    async def _hashes_covering(start: int, length: int) -> list:
+                        covering = []
+                        at = start
+
+                        while at < start + length:
+                            h = _cdn_hashes.pop(at, None)
+
+                            if h is None:
+                                for fetched in await session.invoke(
+                                    raw.functions.upload.GetCdnFileHashes(
+                                        file_token=r.file_token,
+                                        offset=at
+                                    )
+                                ):
+                                    _cdn_hashes[fetched.offset] = fetched
+
+                                h = _cdn_hashes.pop(at, None)
+
+                                CDNFileHashMismatch.check(
+                                    h is not None,
+                                    f"the CDN returned no hash covering offset {at}"
+                                )
+
+                            covering.append(h)
+                            at = h.offset + h.limit
+
+                        return covering
 
                     try:
                         while True:
@@ -1730,17 +1764,15 @@ class Client(Methods):
                                 bytearray(r.encryption_iv[:-4] + (offset_bytes // 16).to_bytes(4, "big"))
                             )
 
-                            hashes = await session.invoke(
-                                raw.functions.upload.GetCdnFileHashes(
-                                    file_token=r.file_token,
-                                    offset=offset_bytes
-                                )
+                            hashes = await _hashes_covering(
+                                offset_bytes, len(decrypted_chunk)
                             )
 
                             # https://core.telegram.org/cdn#verifying-files
                             def _check_all_hashes():
-                                for i, h in enumerate(hashes):
-                                    cdn_chunk = decrypted_chunk[h.limit * i: h.limit * (i + 1)]
+                                for h in hashes:
+                                    at = h.offset - offset_bytes
+                                    cdn_chunk = decrypted_chunk[at: at + h.limit]
                                     CDNFileHashMismatch.check(
                                         h.hash == sha256(cdn_chunk).digest(),
                                         "h.hash == sha256(cdn_chunk).digest()"
@@ -1750,6 +1782,9 @@ class Client(Methods):
 
                             if _stop_requested:
                                 raise pyrogram.StopTransmission
+
+                            if _write_file is not None:
+                                _write_file.write(decrypted_chunk)
 
                             yield decrypted_chunk
 
@@ -1794,6 +1829,8 @@ class Client(Methods):
                         await cdn_session.stop()
             except Exception:
                 raise
+            finally:
+                await pool_lease.aclose()
 
     async def get_session(
         self,
@@ -1972,6 +2009,26 @@ class Client(Methods):
         )
         await session.start(max_attempts=Session.MAX_RETRIES)
         return session
+
+    @contextlib.asynccontextmanager
+    async def _media_pool(self, dc_id: int, n: int):
+        self._media_pool_demand[dc_id] = self._media_pool_demand.get(dc_id, 0) + n
+        task = asyncio.ensure_future(
+            self._get_media_session_pool(
+                dc_id, min(self._media_pool_demand[dc_id], self.MEDIA_POOL_CAP)
+            )
+        )
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
+        try:
+            yield task
+        finally:
+            remaining = self._media_pool_demand.get(dc_id, n) - n
+
+            if remaining > 0:
+                self._media_pool_demand[dc_id] = remaining
+            else:
+                self._media_pool_demand.pop(dc_id, None)
 
     async def _get_media_session_pool(self, dc_id: int, n: int) -> list:
         lock = self._media_sessions_locks.setdefault(dc_id, asyncio.Lock())
