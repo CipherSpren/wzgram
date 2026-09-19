@@ -535,12 +535,15 @@ def get_file_name(
     if hasattr(media, "read"):
         name = getattr(media, "name", None)
 
-        return name if isinstance(name, str) and name else fallback
+        if not isinstance(name, str) or not name:
+            return fallback
 
-    if not isinstance(media, (str, pathlib.PurePath)):
+        return os.path.basename(name) or fallback
+
+    if not isinstance(media, (str, os.PathLike)):
         return fallback
 
-    return pathlib.Path(media).name or fallback
+    return pathlib.Path(os.fspath(media)).name or fallback
 
 
 def get_channel_id(peer_id: int) -> int:

@@ -1,5 +1,4 @@
 import inspect
-import socket
 
 import pytest
 
@@ -80,12 +79,13 @@ async def test_retracting_a_vote_returns_a_poll_not_a_coroutine(app):
     assert isinstance(result, pyrogram.types.Poll)
 
 
-async def test_closing_before_a_connection_exists_still_releases_the_socket():
+async def test_closing_before_a_connection_exists_opens_no_socket_to_leak():
     protocol = TCP(False, None)
 
-    assert isinstance(protocol.socket, socket.socket)
+    assert protocol.socket is None
     assert protocol.writer is None
 
     await protocol.close()
 
-    assert protocol.socket.fileno() == -1
+    assert protocol.socket is None
+    assert protocol.is_connected is False

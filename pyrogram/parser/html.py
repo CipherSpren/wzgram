@@ -87,16 +87,20 @@ class Parser(HTMLParser):
                 extra["url"] = url
         elif tag in ["emoji", "tg-emoji"]:
             custom_emoji_id = attrs.get("emoji-id") or attrs.get("id")
-            if custom_emoji_id is None:
+
+            try:
+                extra["document_id"] = int(custom_emoji_id)
+            except (TypeError, ValueError):
                 return
+
             entity = raw.types.MessageEntityCustomEmoji
-            extra["document_id"] = int(custom_emoji_id)
         elif tag == "tg-time":
-            unix = attrs.get("unix")
-            if unix is None:
+            try:
+                extra["date"] = int(attrs.get("unix"))
+            except (TypeError, ValueError):
                 return
+
             entity = raw.types.MessageEntityFormattedDate
-            extra["date"] = int(unix)
             date_time_format = attrs.get("format", "")
             extra = self._parse_date_time_format(extra, date_time_format)
         else:

@@ -291,17 +291,23 @@ def pyrogram_api():
             leave_chat
             mark_chat_unread
             pin_chat_message
+            pin_forum_topic
             promote_chat_member
             restrict_chat_member
             restrict_sponsored_messages
             set_administrator_title
+            set_chat_accent_color
             set_chat_description
+            set_chat_direct_messages_group
+            set_chat_discussion_group
+            set_chat_member_tag
             set_chat_permissions
             set_chat_photo
             set_chat_protected_content
             set_chat_title
             set_chat_ttl
             set_chat_username
+            set_main_profile_tab
             set_send_as_chat
             set_slow_mode
             toggle_anti_spam
@@ -313,10 +319,12 @@ def pyrogram_api():
             toggle_signatures
             toggle_slow_mode
             toggle_view_forum_as_messages
+            transfer_chat_ownership
             unarchive_chats
             unban_chat_member
             unpin_all_chat_messages
             unpin_chat_message
+            unpin_forum_topic
             update_channel_color
             update_chat_notifications
         """,
@@ -345,6 +353,8 @@ def pyrogram_api():
             get_folders
             join_folder
             leave_folder
+            reorder_folders
+            toggle_folder_tags
         """,
         invite_links="""
         Invite Links
@@ -460,6 +470,8 @@ def pyrogram_api():
             send_video
             send_video_note
             send_voice
+            set_direct_messages_chat_topic_is_marked_as_unread
+            start_bot
             stop_poll
             stream_media
             summarize_text
@@ -567,6 +579,7 @@ def pyrogram_api():
             get_default_emoji_statuses
             get_me
             get_users
+            set_bot_profile_photo
             set_emoji_status
             set_personal_channel
             set_profile_photo
@@ -1153,6 +1166,7 @@ def pyrogram_api():
             PrivacyRuleType
             ProfileColor
             ProfileTab
+            ProxyScheme
             ReplyColor
             SentCodeType
             StickerType

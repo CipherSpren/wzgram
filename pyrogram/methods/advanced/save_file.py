@@ -26,12 +26,12 @@ import math
 import os
 import time
 from hashlib import md5
-from pathlib import PurePath
 from typing import Union, BinaryIO, Callable, Optional
 
 import pyrogram
 from pyrogram import StopTransmission
 from pyrogram import raw
+from pyrogram import utils
 from pyrogram.errors import RPCError
 from pyrogram.methods.rate_limiter import TokenBucket
 from pyrogram.session import Session
@@ -171,7 +171,7 @@ class SaveFile:
 
             part_size = PART_SIZE
 
-            if isinstance(path, (str, PurePath)):
+            if isinstance(path, (str, os.PathLike)):
                 fp = open(path, "rb", buffering=READ_BUFFER)
             elif isinstance(path, io.IOBase):
                 fp = path
@@ -181,7 +181,7 @@ class SaveFile:
                     "or a binary (not text) file pointer"
                 )
 
-            file_name = getattr(fp, "name", "file.jpg")
+            file_name = utils.get_file_name(fp, fallback="file.jpg")
 
             fp.seek(0, os.SEEK_END)
             file_size = fp.tell()
@@ -202,15 +202,16 @@ class SaveFile:
 
             file_total_parts = int(math.ceil(file_size / part_size))
             is_big = file_size > 10 * 1024 * 1024
+            pool_cap = max(1, math.ceil((file_total_parts - file_part) / 2))
             if is_bot:
                 rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_BOT", 120))
-                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_BOT", 8)), POOL_SIZE) if is_big else 1
+                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_BOT", 8)), POOL_SIZE, pool_cap)
             elif is_premium:
                 rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_PREMIUM", 300))
-                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_PREMIUM", 14)), POOL_SIZE) if is_big else 1
+                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_PREMIUM", 14)), POOL_SIZE, pool_cap)
             else:
                 rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_USER", 120))
-                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_USER", 12)), POOL_SIZE) if is_big else 1
+                pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_USER", 12)), POOL_SIZE, pool_cap)
 
             is_missing_part = file_id is not None
             file_id = file_id or self.rnd_id()
@@ -387,5 +388,5 @@ class SaveFile:
                 budget.release_all()
                 await pool_lease.aclose()
 
-                if isinstance(path, (str, PurePath)):
+                if isinstance(path, (str, os.PathLike)):
                     fp.close()

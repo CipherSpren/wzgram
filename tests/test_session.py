@@ -241,7 +241,7 @@ async def test_dead_session_rearms_when_network_returns(monkeypatch):
     assert s.is_started.is_set()
 
     _OutageConn.outage = True
-    assert await _wait_until(lambda: not s.is_started.is_set() and not s._start_active)
+    assert await _wait_until(lambda: not s.is_started.is_set() and not s.is_restarting)
     assert isinstance(s._start_exc, OSError), (
         f"a restart driven by recv_worker must record why it failed, got {s._start_exc!r}"
     )

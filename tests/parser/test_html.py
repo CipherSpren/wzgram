@@ -220,3 +220,49 @@ def test_html_parse_ins():
         assert result["message"] == "inserted"
 
     asyncio.run(run())
+def test_html_parse_tg_emoji_with_a_non_numeric_id():
+    html = HTML(client=None)
+    import asyncio
+
+    async def run():
+        result = await html.parse('<tg-emoji emoji-id="abc">x</tg-emoji>')
+        assert result["message"] == "x"
+        assert result["entities"] is None
+
+    asyncio.run(run())
+
+
+def test_html_parse_tg_emoji_with_a_negative_id():
+    html = HTML(client=None)
+    import asyncio
+
+    async def run():
+        result = await html.parse('<tg-emoji emoji-id="-1">x</tg-emoji>')
+        assert result["message"] == "x"
+        assert result["entities"][0].document_id == -1
+
+    asyncio.run(run())
+
+
+def test_html_parse_tg_time_with_a_non_numeric_unix():
+    html = HTML(client=None)
+    import asyncio
+
+    async def run():
+        result = await html.parse('<tg-time unix="abc">x</tg-time>')
+        assert result["message"] == "x"
+        assert result["entities"] is None
+
+    asyncio.run(run())
+
+
+def test_html_parse_tg_time_with_an_empty_unix():
+    html = HTML(client=None)
+    import asyncio
+
+    async def run():
+        result = await html.parse('<tg-time unix="">x</tg-time>')
+        assert result["message"] == "x"
+        assert result["entities"] is None
+
+    asyncio.run(run())

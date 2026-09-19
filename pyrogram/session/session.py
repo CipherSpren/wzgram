@@ -33,6 +33,7 @@ import pyrogram
 from pyrogram import utils
 from pyrogram import raw
 from pyrogram.connection import Connection, transport_error
+from pyrogram.connection.proxy import client_proxy_address
 from pyrogram.crypto.executor import get_crypto_executor
 from pyrogram.errors import (
     RPCError, InternalServerError, AuthKeyDuplicated, FloodWait, FloodPremiumWait, ServiceUnavailable,
@@ -202,6 +203,16 @@ class Session:
 
                     await self.send(raw.functions.Ping(ping_id=0), timeout=handshake_timeout)
 
+                    # Telegram wants to know which proxy a client sits behind.
+                    proxy_address = client_proxy_address(self.client.proxy)
+                    client_proxy = None
+
+                    if proxy_address is not None:
+                        client_proxy = raw.types.InputClientProxy(
+                            address=proxy_address.hostname,
+                            port=proxy_address.port
+                        )
+
                     if not self.is_cdn:
                         await self.send(
                             raw.functions.InvokeWithLayer(
@@ -220,6 +231,7 @@ class Session:
                                         if self.client.init_connection_params
                                         else None
                                     ),
+                                    proxy=client_proxy,
                                 )
                             ),
                             timeout=handshake_timeout
@@ -760,6 +772,7 @@ class Session:
     ):
         slept = 0.0
         flood_budget = sleep_threshold * Session.MAX_RETRIES
+        retries = max(1, retries)
 
         while retries > 0:
             if not self.is_started.is_set():
