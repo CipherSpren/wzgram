@@ -23,6 +23,7 @@ from typing import Final
 
 import pytest
 
+from pyrogram import Client
 from pyrogram.connection.proxy import (
     HTTPS_PORT,
     HTTPProxy,
@@ -62,6 +63,22 @@ def test_invalid_web_hostname_forms_are_rejected(hostname: str) -> None:
 
 def test_normalize_proxy_none_passes_through() -> None:
     assert normalize_proxy(None) is None
+
+
+@pytest.mark.parametrize("empty", [{}, ""])
+def test_normalize_proxy_empty_means_no_proxy(empty) -> None:
+    assert normalize_proxy(empty) is None
+
+
+def test_client_normalizes_a_proxy_assigned_after_init() -> None:
+    client = Client("proxy_property", api_id=1, api_hash="a", in_memory=True)
+    client.proxy = {"scheme": "socks5", "hostname": "127.0.0.1", "port": 1080}
+
+    assert client.proxy == SOCKS5Proxy(hostname="127.0.0.1", port=1080)
+
+    client.proxy = {}
+
+    assert client.proxy is None
 
 
 def test_normalize_proxy_is_idempotent_on_a_dataclass() -> None:
