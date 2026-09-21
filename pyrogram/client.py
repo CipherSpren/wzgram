@@ -501,7 +501,7 @@ class Client(Methods):
         self.system_lang_code = system_lang_code.lower()
 
         self.ipv6 = ipv6
-        self.proxy = normalize_proxy(proxy)
+        self.proxy = proxy
         self.test_mode = test_mode
         self.bot_token = bot_token
         self.session_string = session_string
@@ -621,6 +621,14 @@ class Client(Methods):
             self.loop = None
 
         self.__config: "raw.types.Config" = None
+
+    @property
+    def proxy(self) -> Optional[Proxy]:
+        return self._proxy
+
+    @proxy.setter
+    def proxy(self, value: Optional[Union[str, ProxyDict, Proxy]]) -> None:
+        self._proxy = normalize_proxy(value)
 
     @property
     def read_ahead_slots(self) -> asyncio.Semaphore:

@@ -528,7 +528,7 @@ def _parse_proxy_dict(proxy: ProxyDict) -> Proxy:
 
 
 def normalize_proxy(proxy: str | ProxyDict | Proxy | None) -> Proxy | None:
-    if proxy is None:
+    if not proxy:
         return None
 
     if isinstance(proxy, _PROXY_TYPES):
