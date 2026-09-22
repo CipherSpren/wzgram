@@ -778,7 +778,9 @@ class Session:
             if not self.is_started.is_set():
                 await self._wait_started()
 
-            if isinstance(query, (raw.functions.InvokeWithoutUpdates, raw.functions.InvokeWithTakeout)):
+            if isinstance(query, (raw.functions.InvokeWithoutUpdates,
+                                  raw.functions.InvokeWithTakeout,
+                                  raw.functions.InvokeWithReCaptcha)):
                 inner_query = query.query
             else:
                 inner_query = query

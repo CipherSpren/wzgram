@@ -1015,6 +1015,7 @@ class Story(Object, Update):
         has_spoiler: Optional[bool] = None,
         ttl_seconds: Optional[int] = None,
 
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
@@ -1073,6 +1074,11 @@ class Story(Object, Update):
                 If you set a timer, the photo will self-destruct in *ttl_seconds*
                 seconds after it was viewed.
 
+
+            view_once (``bool``, *optional*):
+                Pass True if the photo must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -1135,6 +1141,7 @@ class Story(Object, Update):
             ttl_seconds=ttl_seconds,
 
             disable_notification=disable_notification,
+            view_once=view_once,
             schedule_date=schedule_date,
             repeat_period=repeat_period,
             paid_message_star_count=paid_message_star_count,
@@ -1266,6 +1273,7 @@ class Story(Object, Update):
         thumb: Optional[Union[str, BinaryIO]] = None,
         file_name: Optional[str] = None,
         supports_streaming: bool = True,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
@@ -1358,6 +1366,11 @@ class Story(Object, Update):
             supports_streaming (``bool``, *optional*):
                 Pass True, if the uploaded video is suitable for streaming.
 
+            view_once (``bool``, *optional*):
+                Pass True if the video must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
+
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
                 Users will receive a notification with no sound.
@@ -1431,6 +1444,7 @@ class Story(Object, Update):
             file_name=file_name,
             supports_streaming=supports_streaming,
             disable_notification=disable_notification,
+            view_once=view_once,
             schedule_date=schedule_date,
             repeat_period=repeat_period,
             no_sound=no_sound,
@@ -1446,6 +1460,7 @@ class Story(Object, Update):
         duration: int = 0,
         length: int = 1,
         thumb: Optional[Union[str, BinaryIO]] = None,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
@@ -1498,6 +1513,11 @@ class Story(Object, Update):
                 The thumbnail should be in JPEG format and less than 200 KB in size.
                 A thumbnail's width and height should not exceed 320 pixels.
                 Thumbnails can't be reused and can be only uploaded as a new file.
+
+            view_once (``bool``, *optional*):
+                Pass True if the video note must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -1559,6 +1579,7 @@ class Story(Object, Update):
             length=length,
             thumb=thumb,
             disable_notification=disable_notification,
+            view_once=view_once,
             schedule_date=schedule_date,
             repeat_period=repeat_period,
 
@@ -1575,6 +1596,8 @@ class Story(Object, Update):
         parse_mode: Optional["enums.ParseMode"] = None,
         caption_entities: Optional[List["types.MessageEntity"]] = None,
         duration: int = 0,
+        waveform: Optional[bytes] = None,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
@@ -1628,6 +1651,14 @@ class Story(Object, Update):
 
             duration (``int``, *optional*):
                 Duration of the voice message in seconds.
+
+            waveform (``bytes``, *optional*):
+                The waveform of the voice note, as a 5-bit byte string.
+
+            view_once (``bool``, *optional*):
+                Pass True if the voice note must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -1690,6 +1721,8 @@ class Story(Object, Update):
             caption_entities=caption_entities,
             duration=duration,
             disable_notification=disable_notification,
+            waveform=waveform,
+            view_once=view_once,
             schedule_date=schedule_date,
             repeat_period=repeat_period,
 

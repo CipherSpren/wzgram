@@ -27,7 +27,8 @@ class SetProfilePhoto:
         self: "pyrogram.Client",
         *,
         photo: Optional[Union[str, BinaryIO]] = None,
-        video: Optional[Union[str, BinaryIO]] = None
+        video: Optional[Union[str, BinaryIO]] = None,
+        is_public: Optional[bool] = None
     ) -> bool:
         """Set a new profile photo or video (H.264/MPEG-4 AVC video, max 5 seconds).
 
@@ -52,6 +53,9 @@ class SetProfilePhoto:
                 Pass a file path as string to upload a new video that exists on your local machine or
                 pass a binary file-like object with its attribute ".name" set for in-memory uploads.
 
+            is_public (``bool``, *optional*):
+                Pass True to set the photo shown to the users you hid your real photo from.
+
         Returns:
             ``bool``: True on success.
 
@@ -75,7 +79,8 @@ class SetProfilePhoto:
             await self.invoke(
                 raw.functions.photos.UploadProfilePhoto(
                     file=await self.save_file(photo),
-                    video=await self.save_file(video)
+                    video=await self.save_file(video),
+                    fallback=is_public
                 )
             )
         )

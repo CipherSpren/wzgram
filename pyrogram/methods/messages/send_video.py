@@ -49,6 +49,7 @@ class SendVideo:
         thumb: Optional[Union[str, BinaryIO]] = None,
         file_name: Optional[str] = None,
         supports_streaming: bool = True,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         reply_to_message_id: Optional[int] = None,
         reply_to_chat_id: Optional[Union[int, str]] = None,
@@ -151,6 +152,11 @@ class SendVideo:
             supports_streaming (``bool``, *optional*):
                 Pass True, if the uploaded video is suitable for streaming.
                 Defaults to True.
+
+            view_once (``bool``, *optional*):
+                Pass True if the video must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -345,6 +351,9 @@ class SendVideo:
                     quote=quote_text,
                     quote_entities=quote_entities,
                 )
+
+        if view_once:
+            ttl_seconds = (1 << 31) - 1
 
         file = None
 

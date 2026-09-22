@@ -41,6 +41,7 @@ class SendPhoto:
         caption_entities: Optional[List["types.MessageEntity"]] = None,
         has_spoiler: Optional[bool] = None,
         ttl_seconds: Optional[int] = None,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         reply_to_message_id: Optional[int] = None,
         reply_to_chat_id: Optional[Union[int, str]] = None,
@@ -109,6 +110,11 @@ class SendPhoto:
                 Self-Destruct Timer.
                 If you set a timer, the photo will self-destruct in *ttl_seconds*
                 seconds after it was viewed.
+
+            view_once (``bool``, *optional*):
+                Pass True if the photo must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -255,6 +261,9 @@ class SendPhoto:
                     quote=quote_text,
                     quote_entities=quote_entities,
                 )
+
+        if view_once:
+            ttl_seconds = (1 << 31) - 1
 
         file = None
 

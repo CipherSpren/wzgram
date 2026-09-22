@@ -297,6 +297,7 @@ def pyrogram_api():
             restrict_sponsored_messages
             set_administrator_title
             set_chat_accent_color
+            set_upgraded_gift_colors
             set_chat_description
             set_chat_direct_messages_group
             set_chat_discussion_group
@@ -444,6 +445,8 @@ def pyrogram_api():
             search_global_count
             search_messages
             search_messages_count
+            search_posts
+            search_posts_count
             send_animation
             send_audio
             send_cached_media
@@ -457,7 +460,9 @@ def pyrogram_api():
             send_media_group
             send_message
             send_message_draft
+            send_live_photo
             send_paid_media
+            send_paid_reaction
             send_photo
             send_poll
             send_reaction
@@ -1248,11 +1253,13 @@ def pyrogram_api():
             Message.reply_game
             Message.reply_inline_bot_result
             Message.reply_invoice
+            Message.reply_live_photo
             Message.reply_location
             Message.reply_media_group
             Message.reply_paid_media
             Message.reply_photo
             Message.reply_poll
+            Message.reply_rich
             Message.reply_sticker
             Message.reply_venue
             Message.reply_video
@@ -1269,11 +1276,13 @@ def pyrogram_api():
             Message.answer_game
             Message.answer_inline_bot_result
             Message.answer_invoice
+            Message.answer_live_photo
             Message.answer_location
             Message.answer_media_group
             Message.answer_paid_media
             Message.answer_photo
             Message.answer_poll
+            Message.answer_rich
             Message.answer_sticker
             Message.answer_venue
             Message.answer_video
