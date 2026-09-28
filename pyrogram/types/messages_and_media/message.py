@@ -1802,7 +1802,7 @@ class Message(Object, Update):
                 except (ChannelPrivate, ChatAdminRequired):
                     pass
 
-        if not parsed_message.poll:  # Do not cache poll messages
+        if not parsed_message.poll and not is_scheduled:  # Do not cache poll messages
             client.message_cache[(parsed_message.chat.id, parsed_message.id)] = parsed_message
 
         return parsed_message
@@ -3855,9 +3855,7 @@ class Message(Object, Update):
         self._refuse_ephemeral("A game", "send_game")
 
         if reply_parameters is None:
-            reply_parameters = types.ReplyParameters(
-                message_id=reply_to_message_id if reply_to_message_id is not None else self.id
-            )
+            reply_parameters = self._reply_parameters(reply_to_message_id)
 
         if quote is not None:
             log.warning(
@@ -4140,9 +4138,7 @@ class Message(Object, Update):
         self._refuse_ephemeral("An invoice", "send_invoice")
 
         if reply_parameters is None:
-            reply_parameters = types.ReplyParameters(
-                message_id=self.id
-            )
+            reply_parameters = self._reply_parameters()
 
         if message_thread_id is None:
             message_thread_id = self.message_thread_id
@@ -5100,11 +5096,7 @@ class Message(Object, Update):
         self._refuse_ephemeral("A media group", "send_media_group")
 
         if reply_parameters is None:
-            reply_parameters = types.ReplyParameters(
-                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
-                quote=quote_text,
-                quote_entities=quote_entities
-            )
+            reply_parameters = self._reply_parameters(reply_to_message_id, quote_text, quote_entities)
 
         if quote is not None:
             log.warning(
@@ -6354,9 +6346,7 @@ class Message(Object, Update):
         self._refuse_ephemeral("A poll", "send_poll")
 
         if reply_parameters is None:
-            reply_parameters = types.ReplyParameters(
-                message_id=self.id
-            )
+            reply_parameters = self._reply_parameters()
 
         if message_thread_id is None:
             message_thread_id = self.message_thread_id
@@ -6692,9 +6682,7 @@ class Message(Object, Update):
         self._refuse_ephemeral("A dice", "send_dice")
 
         if reply_parameters is None:
-            reply_parameters = types.ReplyParameters(
-                message_id=self.id
-            )
+            reply_parameters = self._reply_parameters()
 
         if message_thread_id is None:
             message_thread_id = self.message_thread_id
@@ -8805,9 +8793,7 @@ class Message(Object, Update):
         self._refuse_ephemeral("Paid media", "send_paid_media")
 
         if reply_parameters is None:
-            reply_parameters = types.ReplyParameters(
-                message_id=self.id
-            )
+            reply_parameters = self._reply_parameters()
 
         if direct_messages_topic_id is None:
             direct_messages_topic_id = self.direct_messages_topic_id
@@ -9223,6 +9209,8 @@ class Message(Object, Update):
         Raises:
             ValueError: In case the passed message id doesn't belong to a media group.
         """
+        self._refuse_scheduled("get_media_group")
+
         return await self._client.get_media_group(
             chat_id=self.chat.id,
             message_id=self.id
@@ -9316,11 +9304,7 @@ class Message(Object, Update):
         self._refuse_ephemeral("An inline bot result", "send_inline_bot_result")
 
         if reply_parameters is None:
-            reply_parameters = types.ReplyParameters(
-                message_id=reply_to_message_id if reply_to_message_id is not None else self.id,
-                quote=quote_text,
-                quote_entities=quote_entities
-            )
+            reply_parameters = self._reply_parameters(reply_to_message_id, quote_text, quote_entities)
 
         if quote is not None:
             log.warning(
@@ -9503,9 +9487,7 @@ class Message(Object, Update):
         self._refuse_ephemeral("A checklist", "send_checklist")
 
         if reply_parameters is None:
-            reply_parameters = types.ReplyParameters(
-                message_id=self.id
-            )
+            reply_parameters = self._reply_parameters()
 
         if quote is not None:
             log.warning(
@@ -9686,6 +9668,9 @@ class Message(Object, Update):
         quote_text: Optional[str] = None,
         quote_entities: Optional[List["types.MessageEntity"]] = None
     ) -> Optional["types.ReplyParameters"]:
+        if message_id is None:
+            self._refuse_scheduled("reply_*")
+
         if message_id is None and self.is_ephemeral:
             if self.outgoing:
                 return None
@@ -9700,6 +9685,13 @@ class Message(Object, Update):
             quote=quote_text,
             quote_entities=quote_entities
         )
+
+    def _refuse_scheduled(self, method: str):
+        if self.scheduled:
+            raise ValueError(
+                f"Message.{method}() cannot be used on a scheduled message: it has not been "
+                f"sent yet, so its id {self.id} would point at the sent message with the same id"
+            )
 
     def _refuse_ephemeral(self, what: str, method: str):
         if self.is_ephemeral:
@@ -10137,6 +10129,7 @@ class Message(Object, Update):
         return await self._client.edit_message_text(
             chat_id=self.chat.id,
             message_id=self.id,
+            schedule_date=self.date if self.scheduled else None,
             text=text,
             parse_mode=parse_mode,
             entities=entities,
@@ -10195,6 +10188,7 @@ class Message(Object, Update):
         return await self._client.edit_message_caption(
             chat_id=self.chat.id,
             message_id=self.id,
+            schedule_date=self.date if self.scheduled else None,
             caption=caption,
             parse_mode=parse_mode,
             caption_entities=caption_entities,
@@ -10236,6 +10230,7 @@ class Message(Object, Update):
         return await self._client.edit_message_media(
             chat_id=self.chat.id,
             message_id=self.id,
+            schedule_date=self.date if self.scheduled else None,
             media=media,
             business_connection_id=self.business_connection_id,
             reply_markup=reply_markup
@@ -10269,6 +10264,7 @@ class Message(Object, Update):
         return await self._client.edit_message_checklist(
             chat_id=self.chat.id,
             message_id=self.id,
+            schedule_date=self.date if self.scheduled else None,
             checklist=checklist,
             business_connection_id=self.business_connection_id,
             reply_markup=reply_markup
@@ -10295,6 +10291,7 @@ class Message(Object, Update):
         return await self._client.edit_message_reply_markup(
             chat_id=self.chat.id,
             message_id=self.id,
+            schedule_date=self.date if self.scheduled else None,
             reply_markup=reply_markup
         )
 
@@ -10338,6 +10335,8 @@ class Message(Object, Update):
         Returns:
             On success, the edited :obj:`~pyrogram.types.Message` is returned.
         """
+        self._refuse_scheduled("edit_live_location")
+
         r = await self._client.invoke(
             raw.functions.messages.EditMessage(
                 peer=await self._client.resolve_peer(self.chat.id),
@@ -10365,6 +10364,8 @@ class Message(Object, Update):
         Returns:
             On success, the edited :obj:`~pyrogram.types.Message` is returned.
         """
+        self._refuse_scheduled("stop_live_location")
+
         r = await self._client.invoke(
             raw.functions.messages.EditMessage(
                 peer=await self._client.resolve_peer(self.chat.id),
@@ -10453,6 +10454,8 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        self._refuse_scheduled("forward")
+
         return await self._client.forward_messages(
             chat_id=chat_id,
             from_chat_id=self.chat.id,
@@ -10895,6 +10898,8 @@ class Message(Object, Update):
         Returns:
             List of :obj:`~pyrogram.types.Message`: On success, a list of copied messages is returned.
         """
+        self._refuse_scheduled("copy_media_group")
+
         return await self._client.copy_media_group(
             chat_id=chat_id,
             from_chat_id=self.chat.id,
@@ -10930,6 +10935,9 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        if self.scheduled:
+            return await self._client.delete_scheduled_messages(self.chat.id, [self.id])
+
         r = await self._client.delete_messages(
             chat_id=self.chat.id,
             message_ids=self.id,
@@ -11013,6 +11021,7 @@ class Message(Object, Update):
             ValueError: In case the provided index or position is out of range or the button label was not found.
             TimeoutError: In case, after clicking an inline button, the bot fails to answer within the timeout.
         """
+        self._refuse_scheduled("click")
 
         if isinstance(self.reply_markup, types.ReplyKeyboardMarkup):
             keyboard = self.reply_markup.keyboard
@@ -11045,7 +11054,7 @@ class Message(Object, Update):
                     button
                     for row in keyboard
                     for button in row
-                    if label == button.text
+                    if label == getattr(button, "text", button)
                 ][0]
             except IndexError:
                 raise ValueError(f"The button with label '{x}' doesn't exists")
@@ -11099,14 +11108,16 @@ class Message(Object, Update):
             elif button.switch_inline_query_current_chat:
                 return button.switch_inline_query_current_chat
             elif button.copy_text:
-                return button.copy_text
+                return button.copy_text.text
             else:
                 raise ValueError("This button is not supported yet")
         else:
+            text = getattr(button, "text", button)
+
             if quote:
-                await self.reply(text=button)
+                return await self.reply(text=text)
             else:
-                await self.answer(text=button)
+                return await self.answer(text=text)
 
     async def react(
         self,
@@ -11140,6 +11151,7 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        self._refuse_scheduled("react")
 
         return await self._client.send_reaction(
             chat_id=self.chat.id,
@@ -11163,6 +11175,7 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        self._refuse_scheduled("retract_vote")
 
         return await self._client.retract_vote(
             chat_id=self.chat.id,
@@ -11254,6 +11267,7 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        self._refuse_scheduled("vote")
 
         return await self._client.vote_poll(
             chat_id=self.chat.id,
@@ -11282,6 +11296,8 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        self._refuse_scheduled("pin")
+
         return await self._client.pin_chat_message(
             chat_id=self.chat.id,
             message_id=self.id,
@@ -11301,6 +11317,8 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        self._refuse_scheduled("unpin")
+
         return await self._client.unpin_chat_message(
             chat_id=self.chat.id,
             message_id=self.id
@@ -11318,6 +11336,8 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        self._refuse_scheduled("read")
+
         return await self._client.read_chat_history(
             chat_id=self.chat.id,
             max_id=self.id
@@ -11335,6 +11355,8 @@ class Message(Object, Update):
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
+        self._refuse_scheduled("view")
+
         return await self._client.view_messages(
             chat_id=self.chat.id,
             message_id=self.id
@@ -11367,6 +11389,8 @@ class Message(Object, Update):
         Returns:
             :obj:`~pyrogram.types.PaymentResult`: On success, the payment result is returned.
         """
+        self._refuse_scheduled("pay")
+
         invoice = types.InputInvoiceMessage(
             chat_id=self.chat.id,
             message_id=self.id
@@ -11387,6 +11411,8 @@ class Message(Object, Update):
         Returns:
             :obj:`~pyrogram.types.Message`: On success, the sent message is returned.
         """
+        self._refuse_scheduled("accept_gift_purchase_offer")
+
         return await self._client.process_gift_purchase_offer(
             message_id=self.id,
             accept=True
@@ -11400,6 +11426,8 @@ class Message(Object, Update):
         Returns:
             :obj:`~pyrogram.types.Message`: On success, the sent message is returned.
         """
+        self._refuse_scheduled("reject_gift_purchase_offer")
+
         return await self._client.process_gift_purchase_offer(
             message_id=self.id,
             accept=False
@@ -11427,6 +11455,8 @@ class Message(Object, Update):
         Raises:
             ValueError: In case of this message can't be summarized.
         """
+        self._refuse_scheduled("summarize")
+
         if not self.summary_language_code:
             raise ValueError("This message can't be summarized.")
 
@@ -11484,6 +11514,8 @@ class Message(Object, Update):
         Raises:
             ListenerTimeout: In case nobody clicked in time.
         """
+        self._refuse_scheduled("wait_for_click")
+
         return await self._client.listen(
             filters=filters,
             listener_type=enums.ListenerTypes.CALLBACK_QUERY,

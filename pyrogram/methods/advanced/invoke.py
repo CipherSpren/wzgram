@@ -143,6 +143,15 @@ INVOKE_WRAPPERS = (
     raw.functions.InvokeWithBusinessConnection,
 )
 
+SERVICE_FUNCTIONS = (
+    raw.functions.Ping,
+    raw.functions.PingDelayDisconnect,
+    raw.functions.DestroySession,
+    raw.functions.DestroyAuthKey,
+    raw.functions.GetFutureSalts,
+    raw.functions.RpcDropAnswer,
+)
+
 
 class Invoke:
     @staticmethod
@@ -261,9 +270,10 @@ class Invoke:
         if not self.is_connected:
             raise ConnectionError("Client has not been started yet")
 
-        if self.no_updates:
-            query = raw.functions.InvokeWithoutUpdates(query=query)
-        elif self.auto_no_updates and not self._auto_needs_updates(query):
+        if (
+            (self.no_updates or (self.auto_no_updates and not self._auto_needs_updates(query)))
+            and not isinstance(self._unwrap(query), SERVICE_FUNCTIONS)
+        ):
             query = raw.functions.InvokeWithoutUpdates(query=query)
 
         if self.takeout_id:

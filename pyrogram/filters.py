@@ -919,12 +919,12 @@ def command(commands: Union[str, List[str]], prefixes: Optional[Union[str, List[
 
             for cmd in flt.commands:
                 escaped_cmd = re.escape(cmd)
-                escaped_username = re.escape(username)
-                if not re.match(rf"^(?:{escaped_cmd}(?:@?{escaped_username})?)(?:\s|$)", without_prefix,
+                mention = rf"(?:@(?i:{re.escape(username)}))?" if username else ""
+                if not re.match(rf"^(?:{escaped_cmd}{mention})(?:\s|$)", without_prefix,
                                 flags=re.IGNORECASE if not flt.case_sensitive else 0):
                     continue
 
-                without_command = re.sub(rf"{escaped_cmd}(?:@?{escaped_username})?\s?", "", without_prefix, count=1,
+                without_command = re.sub(rf"{escaped_cmd}{mention}\s?", "", without_prefix, count=1,
                                          flags=re.IGNORECASE if not flt.case_sensitive else 0)
 
                 message.command = [cmd] + [
@@ -967,7 +967,7 @@ def regex(pattern: Union[str, Pattern], flags: int = 0):
         else:
             raise ValueError(f"Regex filter doesn't work with {type(update)}")
 
-        update.matches = (list(flt.p.finditer(value)) or None) if value else None
+        update.matches = (list(flt.p.finditer(value)) or None) if value and isinstance(value, type(flt.p.pattern)) else None
 
         return bool(update.matches)
 

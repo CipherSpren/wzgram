@@ -3146,7 +3146,7 @@ async def test_copying_a_media_group_keeps_the_source_formatting(monkeypatch):
     bold = [types.MessageEntity(type=enums.MessageEntityType.BOLD, offset=0, length=3)]
     source = SimpleNamespace(
         photo=SimpleNamespace(file_id="AgACAgfake"), audio=None, document=None, video=None,
-        caption="one_two", caption_entities=bold,
+        caption="one_two", caption_entities=bold, has_media_spoiler=None,
     )
     client.get_media_group = AsyncMock(return_value=[source])
 
@@ -5426,3 +5426,246 @@ async def test_unbanning_in_a_basic_group_does_not_ask_a_channel_rpc():
 
     assert await _Client().unban_chat_member(-5, 1) is True
     assert sent == []
+
+
+def test_run_works_without_a_current_event_loop(monkeypatch):
+    import threading
+
+    from pyrogram.methods.utilities import run as run_module
+
+    calls = []
+
+    async def fake_idle():
+        calls.append("idle")
+
+    monkeypatch.setattr(run_module, "idle", fake_idle)
+
+    class _Client(pyrogram.Client):
+        async def start(self, *args, **kwargs):
+            calls.append("start")
+
+        async def stop(self, *args, **kwargs):
+            calls.append("stop")
+
+    async def main():
+        calls.append("main")
+
+    errors = []
+
+    def target():
+        try:
+            app = _Client("run", api_id=1, api_hash="a" * 32, in_memory=True)
+            app.run(main())
+            app.run()
+            app.loop.close()
+        except Exception as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+
+    assert errors == []
+    assert calls == ["main", "start", "idle", "stop"]
+
+
+@pytest.mark.parametrize("scheduled", [True, False])
+async def test_shortcuts_on_a_scheduled_message_act_on_the_scheduled_one(scheduled):
+    from datetime import datetime
+
+    when = datetime(2030, 1, 1, 12, 0)
+    client = AsyncMock()
+    message = types.Message(
+        id=2,
+        chat=types.Chat(id=-100, type=enums.ChatType.SUPERGROUP),
+        date=when,
+        scheduled=scheduled,
+        client=client,
+    )
+
+    await message.delete()
+    await message.edit_text("x")
+    await message.edit_caption("x")
+    await message.edit_media(types.InputMediaPhoto("x"))
+    await message.edit_checklist(types.InputChecklist(title="x", tasks=[]))
+    await message.edit_reply_markup(None)
+
+    if scheduled:
+        client.delete_scheduled_messages.assert_awaited_once_with(-100, [2])
+        client.delete_messages.assert_not_awaited()
+    else:
+        client.delete_messages.assert_awaited_once()
+        client.delete_scheduled_messages.assert_not_awaited()
+
+    for name in ("edit_message_text", "edit_message_caption", "edit_message_media",
+                 "edit_message_checklist", "edit_message_reply_markup"):
+        kwargs = getattr(client, name).await_args.kwargs
+        assert kwargs["message_id"] == 2
+        assert kwargs["schedule_date"] == (when if scheduled else None), name
+
+
+async def test_editing_a_scheduled_message_returns_it():
+    reply = raw.core.TLObject.read(BytesIO(raw.types.Updates(
+        updates=[raw.types.UpdateNewScheduledMessage(message=raw.types.Message(
+            id=2, peer_id=raw.types.PeerUser(user_id=1), date=1893499200,
+            message="edited", out=True,
+        ))],
+        users=[raw.types.User(id=1, first_name="a")], chats=[], date=0, seq=0,
+    ).write()))
+
+    client = _Client(reply)
+    client.message_cache = {}
+
+    edited = await client.edit_message_text("me", 2, "edited")
+
+    assert edited is not None
+    assert edited.id == 2
+    assert edited.text == "edited"
+    assert edited.scheduled is True
+
+
+_SCHEDULED_REFUSED = sorted(
+    name for name, _ in inspect.getmembers(types.Message, inspect.iscoroutinefunction)
+    if name.startswith("reply") and name != "reply_chat_action"
+) + [
+    "forward", "copy_media_group", "pin", "unpin", "react", "vote", "retract_vote", "click", "read",
+    "view", "get_media_group", "edit_live_location", "stop_live_location", "pay",
+    "accept_gift_purchase_offer", "reject_gift_purchase_offer", "summarize", "wait_for_click",
+]
+
+
+def _scheduled_message(scheduled):
+    from datetime import datetime
+
+    return types.Message(
+        id=2,
+        chat=types.Chat(id=-100, type=enums.ChatType.SUPERGROUP),
+        from_user=types.User(id=5),
+        date=datetime(2030, 1, 1),
+        scheduled=scheduled,
+        client=AsyncMock(),
+    )
+
+
+async def _call_with_placeholders(message, name):
+    method = getattr(message, name)
+    required = [
+        p.name for p in inspect.signature(method).parameters.values()
+        if p.default is inspect.Parameter.empty and p.kind is p.POSITIONAL_OR_KEYWORD
+    ]
+
+    await method(**{p: 1 if p in ("latitude", "longitude", "heading") else "x" for p in required})
+
+
+@pytest.mark.parametrize("name", _SCHEDULED_REFUSED)
+async def test_a_scheduled_message_refuses_shortcuts_that_would_hit_a_sent_message(name):
+    message = _scheduled_message(True)
+
+    with pytest.raises(ValueError, match="scheduled message"):
+        await _call_with_placeholders(message, name)
+
+    assert message._client.method_calls == []
+
+
+@pytest.mark.parametrize("name", ["reply_text", "forward", "pin", "react", "answer", "answer_photo"])
+async def test_the_scheduled_guard_leaves_sent_messages_and_answers_alone(name):
+    await _call_with_placeholders(_scheduled_message(False), name)
+
+    if name.startswith("answer"):
+        await _call_with_placeholders(_scheduled_message(True), name)
+
+
+async def test_a_scheduled_message_is_not_cached_under_a_sent_message_id():
+    client = _Client()
+    client.message_cache = {}
+
+    await types.Message._parse(
+        client,
+        raw.core.TLObject.read(BytesIO(raw.types.Message(
+            id=2, peer_id=raw.types.PeerUser(user_id=1), date=1893499200, message="later", out=True,
+        ).write())),
+        {1: raw.core.TLObject.read(BytesIO(raw.types.User(id=1, first_name="a").write()))},
+        {},
+        is_scheduled=True,
+    )
+
+    assert client.message_cache == {}
+
+
+class _ResolveStorage:
+    def __init__(self, peers):
+        self.peers = peers
+        self.asked = []
+
+    async def get_peer_by_id(self, peer_id):
+        self.asked.append(peer_id)
+        return self.peers[peer_id]
+
+    async def get_peer_by_username(self, username):
+        return self.peers[username]
+
+    async def get_peer_by_phone_number(self, phone):
+        return self.peers[phone]
+
+
+def _resolve_client(peers, answer=None):
+    client = pyrogram.Client("resolve", api_id=1, api_hash="a" * 32, in_memory=True)
+    client.storage = _ResolveStorage(peers)
+    client.is_connected = True
+    client.sent = []
+
+    async def invoke(query, *args, **kwargs):
+        client.sent.append(query)
+        for key, value in (answer or {}).items():
+            client.storage.peers[key] = value
+        return raw.types.contacts.ResolvedPeer(peer=raw.types.PeerUser(user_id=42), chats=[], users=[])
+
+    client.invoke = invoke
+    return client
+
+
+@pytest.mark.parametrize("link", [
+    "https://t.me/Telegram", "t.me/telegram", "http://www.t.me/telegram/5", "https://telegram.me/telegram?start=x",
+])
+async def test_resolve_peer_reads_the_username_out_of_a_link(link):
+    peer = raw.types.InputPeerChannel(channel_id=1, access_hash=2)
+
+    assert await _resolve_client({"telegram": peer}).resolve_peer(link) == peer
+
+
+async def test_resolve_peer_reads_the_channel_id_out_of_a_private_link():
+    peer = raw.types.InputPeerChannel(channel_id=1234, access_hash=2)
+    client = _resolve_client({utils.get_channel_id(1234): peer})
+
+    assert await client.resolve_peer("https://t.me/c/1234/56") == peer
+    assert client.sent == []
+
+
+async def test_resolve_peer_asks_telegram_for_an_unknown_phone_number():
+    peer = raw.types.InputPeerUser(user_id=42, access_hash=7)
+    client = _resolve_client({}, answer={42: peer})
+
+    assert await client.resolve_peer("+1 202 555 0123") == peer
+    assert [type(q) for q in client.sent] == [raw.functions.contacts.ResolvePhone]
+    assert client.sent[0].phone == "12025550123"
+
+
+async def test_resolve_peer_does_not_ask_for_a_phone_that_is_not_one():
+    client = _resolve_client({})
+
+    with pytest.raises(pyrogram.errors.PeerIdInvalid):
+        await client.resolve_peer("-100123")
+
+    assert client.sent == []
+
+
+async def test_resolve_peer_keeps_peer_id_invalid_for_a_phone_telegram_does_not_know():
+    client = _resolve_client({})
+
+    async def invoke(query, *args, **kwargs):
+        raise pyrogram.errors.BadRequest("[400 PHONE_NOT_OCCUPIED]")
+
+    client.invoke = invoke
+
+    with pytest.raises(pyrogram.errors.PeerIdInvalid):
+        await client.resolve_peer("+999 000 0000")
