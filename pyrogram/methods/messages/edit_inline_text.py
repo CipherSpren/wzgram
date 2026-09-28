@@ -38,7 +38,7 @@ class EditInlineText:
         rich_text: Optional[Union[str, "types.InputRichMessage"]] = None,
         rich_text_parse_mode: "enums.ParseMode" = enums.ParseMode.MARKDOWN,
         rich_text_media: Optional[List["types.InputRichMessageMedia"]] = None,
-        reply_markup: Optional["types.InlineKeyboardMarkup"] = None,
+        reply_markup: Union["types.InlineKeyboardMarkup", type[object], None] = object,
         business_connection_id: Optional[str] = None,
     ) -> bool:
         """Edit the text of inline messages.
@@ -82,6 +82,7 @@ class EditInlineText:
 
             reply_markup (:obj:`~pyrogram.types.InlineKeyboardMarkup`, *optional*):
                 An InlineKeyboardMarkup object.
+                Pass None to remove the existing reply markup.
 
             show_caption_above_media (``bool``, *optional*):
                 Pass True, if the caption must be shown above the message media.
@@ -151,8 +152,8 @@ class EditInlineText:
                     force_large_media=link_preview_options.prefer_large_media,
                     force_small_media=link_preview_options.prefer_small_media,
                     optional=True
-                ) if link_preview_options is not None and link_preview_options.url else None,
-                reply_markup=await reply_markup.write(self) if reply_markup else None,
+                ) if link_preview_options is not None and link_preview_options.url and not no_webpage else None,
+                reply_markup=await utils.write_edit_reply_markup(self, reply_markup=reply_markup),
                 **text_params
             ),
             business_connection_id

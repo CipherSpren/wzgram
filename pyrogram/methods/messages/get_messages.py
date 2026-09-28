@@ -98,8 +98,8 @@ class GetMessages:
             ids = [raw.types.InputMessagePinned()]
         else:
             ids, ids_type = (
-                (message_ids, raw.types.InputMessageID) if message_ids
-                else (reply_to_message_ids, raw.types.InputMessageReplyTo) if reply_to_message_ids
+                (message_ids, raw.types.InputMessageID) if message_ids is not None
+                else (reply_to_message_ids, raw.types.InputMessageReplyTo) if reply_to_message_ids is not None
                 else (None, None)
             )
 

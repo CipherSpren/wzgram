@@ -313,12 +313,22 @@ def parse_deleted_messages(client, update, users, chats) -> List["types.Message"
                 )
 
     parsed_messages = []
+    ephemeral = isinstance(update, raw.types.UpdateDeleteEphemeralMessages)
 
     for message in messages:
+        known = (
+            client.message_cache.pop((chat.id, "ephemeral", message))
+            if ephemeral and chat is not None
+            else None
+        )
+
         parsed_messages.append(
             types.Message(
                 id=message,
                 chat=chat,
+                ephemeral_message_id=message if ephemeral else None,
+                from_user=known.from_user if known else None,
+                receiver_user=known.receiver_user if known else None,
                 business_connection_id=getattr(update, "connection_id", None),
                 client=client
             )
@@ -474,9 +484,12 @@ async def get_reply_to(
     """Get InputReply for reply_to argument"""
     if reply_parameters:
         if reply_parameters.ephemeral_message_id:
-            return raw.types.InputReplyToEphemeralMessage(
-                id=reply_parameters.ephemeral_message_id
-            )
+            deadline = getattr(reply_parameters, "_ephemeral_quote_deadline", None)
+
+            if deadline is None or client.server_time < deadline:
+                return raw.types.InputReplyToEphemeralMessage(
+                    id=reply_parameters.ephemeral_message_id
+                )
 
         if reply_parameters.chat_id and reply_parameters.story_id:
             return raw.types.InputReplyToStory(
@@ -903,3 +916,21 @@ def run_in_background(coro, loop: Optional[asyncio.AbstractEventLoop] = None) ->
     task.add_done_callback(_background_tasks.discard)
 
     return task
+
+
+async def write_edit_reply_markup(
+    client: "pyrogram.Client",
+    *,
+    reply_markup: Union["types.InlineKeyboardMarkup", type[object], None],
+) -> Optional["raw.base.ReplyMarkup"]:
+    if reply_markup is object or reply_markup is None:
+        return None
+
+    return await reply_markup.write(client)
+
+
+def unbound_handler_args(receiver, filters, group: int):
+    if isinstance(filters, int):
+        return receiver, filters
+
+    return (receiver if receiver is not None else filters), group

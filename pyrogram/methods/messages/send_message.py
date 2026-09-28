@@ -282,7 +282,7 @@ class SendMessage:
                 quick_reply_shortcut=raw.types.InputQuickReplyShortcutId(shortcut_id=quick_reply_shortcut) if quick_reply_shortcut is not None else None,
             )
 
-            if link_preview_options is not None and link_preview_options.url:
+            if link_preview_options is not None and link_preview_options.url and not no_webpage:
                 request = await as_ephemeral(self, ephemeral_message_parameters, raw.functions.messages.SendMedia(
                     media=raw.types.InputMediaWebPage(
                         url=link_preview_options.url,

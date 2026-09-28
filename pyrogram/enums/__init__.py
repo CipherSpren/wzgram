@@ -56,6 +56,7 @@ from .proxy_scheme import ProxyScheme
 from .reply_color import ReplyColor
 from .rich_button_style import RichButtonStyle
 from .sent_code_type import SentCodeType
+from .sticker_format import StickerFormat
 from .sticker_type import StickerType
 from .stories_privacy_rules import StoriesPrivacyRules
 from .suggested_post_refund_reason import SuggestedPostRefundReason
@@ -105,6 +106,7 @@ __all__ = [
     'ReplyColor',
     'RichButtonStyle',
     'SentCodeType',
+    'StickerFormat',
     'StickerType',
     'StoriesPrivacyRules',
     'SuggestedPostRefundReason',

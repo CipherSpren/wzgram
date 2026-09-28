@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -1246,7 +1246,7 @@ class TestEphemeralMessageWithoutAPeer:
 
     async def test_an_outgoing_message_is_a_chat_with_the_receiver(self):
         parsed = await types.Message._parse(
-            Mock(), _ephemeral_message(out=True), self.users, {}
+            MagicMock(), _ephemeral_message(out=True), self.users, {}
         )
 
         assert parsed.chat is not None, "a message with no peer still has a counterpart"
@@ -1255,7 +1255,7 @@ class TestEphemeralMessageWithoutAPeer:
 
     async def test_an_incoming_message_is_a_chat_with_the_sender(self):
         parsed = await types.Message._parse(
-            Mock(), _ephemeral_message(out=False), self.users, {}
+            MagicMock(), _ephemeral_message(out=False), self.users, {}
         )
 
         assert parsed.chat is not None
@@ -1263,7 +1263,7 @@ class TestEphemeralMessageWithoutAPeer:
 
     async def test_a_message_with_a_peer_still_uses_it(self):
         message = _ephemeral_message(out=True, peer_id=raw.types.PeerUser(user_id=1))
-        parsed = await types.Message._parse(Mock(), message, self.users, {})
+        parsed = await types.Message._parse(MagicMock(), message, self.users, {})
 
         assert parsed.chat.id == 1
 
@@ -1291,7 +1291,7 @@ class TestEphemeralCallbackQuery:
         )
         users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
 
-        parsed = await types.CallbackQuery._parse(Mock(), update, users, {})
+        parsed = await types.CallbackQuery._parse(MagicMock(), update, users, {})
 
         assert parsed.id == "5"
         assert parsed.data == "payload"
@@ -1811,3 +1811,123 @@ def test_an_entity_offset_still_indexes_the_text_that_entity_marks() -> None:
     text = MessageStr("😀 bold").init([entity])
 
     assert text[entity.offset : entity.offset + entity.length] == "bold"
+
+
+_EMPTY_CAPTION = raw.types.PageCaption(
+    text=raw.types.TextEmpty(),
+    credit=raw.types.TextEmpty(),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param(
+            raw.types.PageBlockVideo(
+                video_id=1,
+                caption=_EMPTY_CAPTION,
+            ),
+            id="video",
+        ),
+        pytest.param(
+            raw.types.PageBlockDocument(
+                document_id=1,
+                caption=_EMPTY_CAPTION,
+            ),
+            id="document",
+        ),
+        pytest.param(
+            raw.types.PageBlockAudio(
+                audio_id=1,
+                caption=_EMPTY_CAPTION,
+            ),
+            id="audio",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "documents",
+    [
+        pytest.param({}, id="absent"),
+        pytest.param({1: raw.types.DocumentEmpty(id=1)}, id="empty"),
+    ],
+)
+async def test_a_media_block_without_a_usable_document_is_unsupported(
+    block: raw.base.PageBlock,
+    *,
+    documents: dict[int, raw.base.Document],
+) -> None:
+    parsed = await types.RichBlock._parse(None, block, {}, documents, {}, {})
+    assert type(parsed) is types.RichBlockUnsupported
+
+
+@pytest.mark.asyncio
+async def test_a_media_block_inside_a_list_item_still_finds_its_document() -> None:
+    document = raw.types.Document(
+        id=555,
+        access_hash=666,
+        file_reference=b"ref",
+        date=0,
+        mime_type="application/pdf",
+        size=10,
+        dc_id=2,
+        attributes=[raw.types.DocumentAttributeFilename(file_name="a.pdf")],
+    )
+
+    parsed = await types.RichBlock._parse(
+        None,
+        raw.types.PageBlockList(
+            items=[
+                raw.types.PageListItemBlocks(
+                    blocks=[
+                        raw.types.PageBlockDocument(
+                            document_id=555,
+                            caption=_EMPTY_CAPTION,
+                        )
+                    ]
+                )
+            ]
+        ),
+        {},
+        {555: document},
+        {},
+        {},
+    )
+
+    assert parsed.items[0].blocks[0].document.file_name == "a.pdf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ids",
+    [
+        {"foursquare_id": "x"},
+        {"foursquare_type": "x"},
+        {"google_place_id": "x"},
+        {"google_place_type": "x"},
+    ],
+)
+async def test_a_venue_with_half_an_identifier_pair_still_serializes(ids) -> None:
+    media = await types.InputMediaVenue(
+        latitude=1.0, longitude=2.0, title="t", address="a", **ids
+    ).write()
+
+    media.write()
+
+
+@pytest.mark.asyncio
+async def test_giveaway_winners_parse_when_the_launch_message_is_gone():
+    from pyrogram.errors import MessageIdsEmpty
+
+    client = MagicMock()
+    client.get_messages = AsyncMock(side_effect=MessageIdsEmpty())
+    channel = raw.types.Channel(id=7, title="t", photo=raw.types.ChatPhotoEmpty(), date=0, usernames=[], restriction_reason=[])
+    media = raw.types.MessageMediaGiveawayResults(
+        channel_id=7, launch_msg_id=5, winners_count=1, unclaimed_count=0, winners=[], until_date=0
+    )
+
+    winners = await types.GiveawayWinners._parse(client, media, {}, {7: channel})
+
+    assert winners.giveaway_message_id == 5
+    assert winners.giveaway_message is None

@@ -256,6 +256,7 @@ def pyrogram_api():
             archive_chats
             ban_chat_member
             close_forum_topic
+            close_general_forum_topic
             create_channel
             create_forum_topic
             create_group
@@ -268,6 +269,7 @@ def pyrogram_api():
             delete_supergroup
             delete_user_history
             edit_forum_topic
+            edit_general_forum_topic
             get_chat
             get_chat_event_log
             get_chat_member
@@ -287,12 +289,15 @@ def pyrogram_api():
             get_similar_channels
             get_suitable_discussion_chats
             get_top_chats
+            hide_general_forum_topic
             join_chat
             leave_chat
             mark_chat_unread
             pin_chat_message
             pin_forum_topic
             promote_chat_member
+            reopen_forum_topic
+            reopen_general_forum_topic
             restrict_chat_member
             restrict_sponsored_messages
             set_administrator_title
@@ -323,7 +328,10 @@ def pyrogram_api():
             transfer_chat_ownership
             unarchive_chats
             unban_chat_member
+            unhide_general_forum_topic
             unpin_all_chat_messages
+            unpin_all_forum_topic_messages
+            unpin_all_general_forum_topic_messages
             unpin_chat_message
             unpin_forum_topic
             update_channel_color
@@ -483,6 +491,36 @@ def pyrogram_api():
             translate_text
             view_messages
             vote_poll
+        """,
+        stickers="""
+        Stickers
+            add_favorite_sticker
+            add_recent_sticker
+            add_sticker_to_set
+            change_sticker_set
+            clear_recent_stickers
+            create_new_sticker_set
+            delete_sticker_from_set
+            delete_sticker_set
+            get_favorite_stickers
+            get_owned_sticker_sets
+            get_recent_stickers
+            get_sticker_set
+            get_suggested_sticker_set_name
+            remove_favorite_sticker
+            remove_recent_sticker
+            reorder_installed_sticker_sets
+            replace_sticker_in_set
+            search_sticker_sets
+            search_stickers
+            set_custom_emoji_sticker_set_thumbnail
+            set_sticker_emoji_list
+            set_sticker_keywords
+            set_sticker_mask_position
+            set_sticker_position_in_set
+            set_sticker_set_thumbnail
+            set_sticker_set_title
+            upload_sticker_file
         """,
         password="""
         Password
@@ -763,6 +801,8 @@ def pyrogram_api():
             Location
             Venue
             Sticker
+            StickerSet
+            File
             Game
             WebPage
             Poll
@@ -1058,6 +1098,7 @@ def pyrogram_api():
             InputMediaLivePhoto
             InputMediaLocation
             InputMediaSticker
+            InputSticker
             InputMediaVenue
             InputMessageContent
             InputPollMedia
@@ -1175,6 +1216,7 @@ def pyrogram_api():
             ReplyColor
             SentCodeType
             StickerType
+            StickerFormat
             StoriesPrivacyRules
             SuggestedPostRefundReason
             SuggestedPostState

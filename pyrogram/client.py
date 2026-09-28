@@ -37,7 +37,7 @@ from importlib import import_module
 from io import BytesIO, StringIO
 from mimetypes import MimeTypes
 from pathlib import Path
-from typing import AsyncGenerator, Callable, List, Optional, Type, Union
+from typing import Any, AsyncGenerator, Callable, List, Optional, Type, Union
 
 import pyrogram
 from pyrogram import __license__, __version__, enums, raw, utils
@@ -76,6 +76,25 @@ from .parser import Parser
 from .session.internals import MsgId
 
 log = logging.getLogger(__name__)
+
+
+def _plugin_handlers(target: Any) -> Optional[List[tuple]]:
+    try:
+        handlers = target.handlers
+
+        if not isinstance(handlers, (list, tuple)):
+            return None
+
+        pairs = list(handlers)
+    except Exception:
+        return None
+
+    for pair in pairs:
+        if not (isinstance(pair, (tuple, list)) and len(pair) == 2 and isinstance(pair[0], Handler)):
+            return None
+
+    return pairs
+
 
 _handler_executor: Optional[ThreadPoolExecutor] = None
 
@@ -167,7 +186,7 @@ def write_at(fd: int, data: bytes, offset: int) -> None:
 
 
 class Client(Methods):
-    """Pyrogram Client, the main means for interacting with Telegram.
+    """wzgram Client, the main means for interacting with Telegram.
 
     Parameters:
         name (``str``):
@@ -183,7 +202,7 @@ class Client(Methods):
 
         app_version (``str``, *optional*):
             Application version.
-            Defaults to "Pyrogram x.y.z".
+            Defaults to "wzgram x.y.z".
 
         device_model (``str``, *optional*):
             Device model.
@@ -268,7 +287,7 @@ class Client(Methods):
 
         workdir (``str``, *optional*):
             Define a custom working directory.
-            The working directory is the location in the filesystem where Pyrogram will store the session files.
+            The working directory is the location in the filesystem where wzgram will store the session files.
             Defaults to the parent directory of the main script.
 
         plugins (``dict``, *optional*):
@@ -287,6 +306,7 @@ class Client(Methods):
         skip_updates (``bool``, *optional*):
             Pass True to skip pending updates that arrived while the client was offline.
             Doesn't work if *in_memory* is set to True.
+            Skipped updates can still be fetched on demand with :meth:`~pyrogram.Client.recover_gaps`.
             Defaults to True.
 
         takeout (``bool``, *optional*):
@@ -389,7 +409,7 @@ class Client(Methods):
             Defaults to True.
     """
 
-    APP_VERSION = f"Pyrogram {__version__}"
+    APP_VERSION = f"wzgram {__version__}"
     DEVICE_MODEL = f"{platform.python_implementation()} {platform.python_version()}"
     SYSTEM_VERSION = f"{platform.system()} {platform.release()}"
 
@@ -611,6 +631,7 @@ class Client(Methods):
         self.updates_watchdog_event = asyncio.Event()
         self.last_update_time = datetime.now()
         self._last_update_monotonic = time.monotonic()
+        self._state_marks = {}
 
         self.media_pool_reaper_task = None
         self.media_pool_reaper_event = asyncio.Event()
@@ -673,7 +694,9 @@ class Client(Methods):
             if idle > self.UPDATES_WATCHDOG_INTERVAL:
                 try:
                     await self.invoke(raw.functions.updates.GetState())
-                    await self.recover_gaps()
+
+                    if not self.skip_updates:
+                        await self.recover_gaps()
                 except Exception:
                     log.exception("Updates watchdog poll failed")
 
@@ -818,7 +841,7 @@ class Client(Methods):
                             # TODO: Call raw.functions.auth.CheckPaidAuth (requires premium payment support)
                             raise Unauthorized(
                                 f"You need to pay {email_sent_code.sent_code.amount}{email_sent_code.sent_code.currency} or purchase premium to continue authorization "
-                                "process, which is currently not supported by Pyrogram."
+                                "process, which is currently not supported by wzgram."
                             )
                 except BadRequest as e:
                     print(e.MESSAGE)
@@ -920,8 +943,8 @@ class Client(Methods):
             try:
                 print(
                     "\x1b[2J\n"
-                    f"Welcome to Pyrogram (version {__version__})\n"
-                    "Pyrogram is free software and comes with ABSOLUTELY NO WARRANTY. Licensed\n"
+                    f"Welcome to wzgram (version {__version__})\n"
+                    "wzgram is free software and comes with ABSOLUTELY NO WARRANTY. Licensed\n"
                     f"under the terms of the {__license__}.\n"
                     "Scan the QR code below to login\n"
                     "Settings -> Privacy and Security -> Active Sessions -> Scan QR Code.",
@@ -1074,6 +1097,31 @@ class Client(Methods):
 
         return is_min
 
+    async def _save_update_state(self, state):
+        if isinstance(state, int):
+            self._state_marks.pop(state, None)
+            await self.storage.update_state(state)
+            return
+
+        state_id, pts, qts = state[:3]
+        known_pts, known_qts = self._state_marks.get(state_id, (None, None))
+
+        if pts is not None and known_pts is not None and pts < known_pts:
+            pts = None
+
+        if qts is not None and known_qts is not None and qts < known_qts:
+            qts = None
+
+        if pts is None and qts is None and (state[1] is not None or state[2] is not None):
+            return
+
+        self._state_marks[state_id] = (
+            known_pts if pts is None else pts,
+            known_qts if qts is None else qts,
+        )
+
+        await self.storage.update_state((state_id, pts, qts) + tuple(state[3:]))
+
     async def handle_updates(self, updates):
         # the datetime is what callers read; the watchdog measures a duration and
         # a host clock that steps backwards must not stall it for the step
@@ -1104,13 +1152,20 @@ class Client(Methods):
 
                 pts = getattr(update, "pts", None)
                 pts_count = getattr(update, "pts_count", None)
+                qts = getattr(update, "qts", None)
 
                 if pts:
                     key = utils.get_channel_id(channel_id) if channel_id else 0
-                    known = pending_states.get(key)
+                    known = pending_states.get(key, (key, None, None, updates.date, updates.seq))
 
-                    if known is None or pts > known[1]:
-                        pending_states[key] = (key, pts, None, updates.date, updates.seq)
+                    if known[1] is None or pts > known[1]:
+                        pending_states[key] = (key, pts) + known[2:]
+
+                if qts:
+                    known = pending_states.get(0, (0, None, None, updates.date, updates.seq))
+
+                    if known[2] is None or qts > known[2]:
+                        pending_states[0] = known[:2] + (qts,) + known[3:]
 
                 if isinstance(update, raw.types.UpdateChannelTooLong):
                     log.info(update)
@@ -1144,9 +1199,9 @@ class Client(Methods):
                 await self.dispatcher.enqueue_update(update, users, chats)
 
             for state in pending_states.values():
-                await self.storage.update_state(state)
+                await self._save_update_state(state)
         elif isinstance(updates, (raw.types.UpdateShortMessage, raw.types.UpdateShortChatMessage)):
-            await self.storage.update_state(
+            await self._save_update_state(
                 (
                     0,
                     updates.pts,
@@ -1179,10 +1234,16 @@ class Client(Methods):
                     await self.dispatcher.enqueue_update(diff.other_updates[0], {}, {})
         elif isinstance(updates, raw.types.UpdateShort):
             await self.dispatcher.enqueue_update(updates.update, {}, {})
+
+            qts = getattr(updates.update, "qts", None)
+
+            if qts:
+                await self._save_update_state((0, None, qts, updates.date, None))
         elif isinstance(updates, raw.types.UpdatesTooLong):
             log.info(updates)
 
     async def load_session(self):
+        self._state_marks = {}
         await self.storage.open()
 
         session_empty = any([
@@ -1272,19 +1333,19 @@ class Client(Methods):
                     module_path = '.'.join(path.parent.parts + (path.stem,))
                     module = import_module(module_path)
 
-                    for name in vars(module).keys():
-                        # noinspection PyBroadException
-                        try:
-                            for handler, group in getattr(module, name).handlers:
-                                if isinstance(handler, Handler) and isinstance(group, int):
-                                    self.add_handler(handler, group)
+                    for name in list(vars(module)):
+                        for handler, group in _plugin_handlers(getattr(module, name)) or ():
+                            if not isinstance(group, int):
+                                log.warning('[%s] [LOAD] Ignoring %s("%s") from "%s": the group must be an int, got %r',
+                                            self.name, type(handler).__name__, name, module_path, group)
+                                continue
 
-                                    log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
+                            self.add_handler(handler, group)
 
-                                    count += 1
-                        except Exception:
-                            pass
+                            log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
+                                self.name, type(handler).__name__, name, group, module_path))
+
+                            count += 1
             else:
                 for path, handlers in include:
                     module_path = root + "." + path
@@ -1304,21 +1365,27 @@ class Client(Methods):
                         handlers = vars(module).keys()
                         warn_non_existent_functions = False
 
-                    for name in handlers:
-                        # noinspection PyBroadException
-                        try:
-                            for handler, group in getattr(module, name).handlers:
-                                if isinstance(handler, Handler) and isinstance(group, int):
-                                    self.add_handler(handler, group)
+                    for name in list(handlers):
+                        pairs = _plugin_handlers(getattr(module, name, None))
 
-                                    log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
-
-                                    count += 1
-                        except Exception:
+                        if pairs is None:
                             if warn_non_existent_functions:
                                 log.warning('[{}] [LOAD] Ignoring non-existent function "{}" from "{}"'.format(
                                     self.name, name, module_path))
+                            continue
+
+                        for handler, group in pairs:
+                            if not isinstance(group, int):
+                                log.warning('[%s] [LOAD] Ignoring %s("%s") from "%s": the group must be an int, got %r',
+                                            self.name, type(handler).__name__, name, module_path, group)
+                                continue
+
+                            self.add_handler(handler, group)
+
+                            log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
+                                self.name, type(handler).__name__, name, group, module_path))
+
+                            count += 1
 
             if exclude:
                 for path, handlers in exclude:
@@ -1339,21 +1406,25 @@ class Client(Methods):
                         handlers = vars(module).keys()
                         warn_non_existent_functions = False
 
-                    for name in handlers:
-                        # noinspection PyBroadException
-                        try:
-                            for handler, group in getattr(module, name).handlers:
-                                if isinstance(handler, Handler) and isinstance(group, int):
-                                    self.remove_handler(handler, group)
+                    for name in list(handlers):
+                        pairs = _plugin_handlers(getattr(module, name, None))
 
-                                    log.info('[{}] [UNLOAD] {}("{}") from group {} in "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
-
-                                    count -= 1
-                        except Exception:
+                        if pairs is None:
                             if warn_non_existent_functions:
                                 log.warning('[{}] [UNLOAD] Ignoring non-existent function "{}" from "{}"'.format(
                                     self.name, name, module_path))
+                            continue
+
+                        for handler, group in pairs:
+                            if not isinstance(group, int):
+                                continue
+
+                            self.remove_handler(handler, group)
+
+                            log.info('[{}] [UNLOAD] {}("{}") from group {} in "{}"'.format(
+                                self.name, type(handler).__name__, name, group, module_path))
+
+                            count -= 1
 
             if count > 0:
                 log.info('[{}] Successfully loaded {} plugin{} from "{}"'.format(
@@ -2111,6 +2182,7 @@ class Client(Methods):
 
             for session in self.media_session_pools.get(dc_id, []):
                 if session.is_started.is_set() or session.is_restarting:
+                    session.last_used = time.monotonic()
                     pool.append(session)
                 else:
                     # dropping it here puts it out of the reaper's reach, and its
@@ -2260,6 +2332,9 @@ class Cache:
     def get(self, key, default=None):
         value = self.__getitem__(key)
         return value if value is not None else default
+
+    def pop(self, key, default=None):
+        return self.store.pop(key, default)
 
     def __setitem__(self, key, value):
         if key in self.store:
