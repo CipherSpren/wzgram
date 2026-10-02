@@ -1594,6 +1594,7 @@ class Client(Methods):
                 async def _worker(pool, i):
                     nonlocal _done_count, _last_rate_adj, _fast_window
                     window = media_window(pool[0].auth_key, dc_id)
+
                     while True:
                         await buffer_slots.acquire()
 
@@ -1603,9 +1604,7 @@ class Client(Methods):
                             buffer_slots.release()
                             return
 
-                        # picked per part, so a window that shrinks mid-transfer
-                        # takes this worker off the connection the DC is dropping
-                        session = pool[i % window.connections(len(pool))]
+                        session = window.pick(pool, i)
 
                         try:
                             await _getfile_rate.acquire()
@@ -2184,9 +2183,6 @@ class Client(Methods):
     async def _get_media_session_pool(self, dc_id: int, n: int) -> list:
         lock = self._media_sessions_locks.setdefault(dc_id, asyncio.Lock())
         async with lock:
-            # the main media session is the first connection of the window; it
-            # lives in media_sessions, out of the reaper's reach, so only the
-            # extras are kept in media_session_pools
             media = await self.get_session(dc_id, is_media=True)
             window = media_window(media.auth_key, dc_id)
             n = window.connections(n)
@@ -2198,9 +2194,6 @@ class Client(Methods):
                     # socket, ping task and receive task outlive the client
                     utils.run_in_background(session.stop(), self.loop)
                 elif len(extras) >= window.size - 1 and not session.results:
-                    # above a shrunk window an open connection is what the DC
-                    # keeps dropping, used or not. Only above the window: every
-                    # worker picks through it, so none can still be holding one
                     utils.run_in_background(session.stop(), self.loop)
                 else:
                     extras.append(session)

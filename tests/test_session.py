@@ -399,6 +399,7 @@ class FakeQuery:
 
 class FakeSession:
     MAX_RETRIES = Session.MAX_RETRIES
+    _windowed = False
     WAIT_TIMEOUT = Session.WAIT_TIMEOUT
 
     def __init__(self, fail_times=0):
