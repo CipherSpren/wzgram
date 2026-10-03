@@ -666,6 +666,9 @@ async def build_input_rich_message(
     media: Optional[List["types.InputRichMessageMedia"]] = None,
     chat_id: Optional[Union[int, str]] = None
 ) -> "raw.base.InputRichMessage":
+    if isinstance(rich_text, types.RichMessage):
+        return rich_text._write()
+
     if isinstance(rich_text, types.InputRichMessage):
         await rich_text._upload(client, chat_id)
 
