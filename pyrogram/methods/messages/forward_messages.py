@@ -195,11 +195,14 @@ class ForwardMessages:
         for i in r.updates:
             if isinstance(i, (raw.types.UpdateNewMessage,
                               raw.types.UpdateNewChannelMessage,
-                              raw.types.UpdateNewScheduledMessage)):
+                              raw.types.UpdateNewScheduledMessage,
+                              raw.types.UpdateBotNewBusinessMessage)):
                 forwarded_messages.append(
                     await types.Message._parse(
                         self, i.message,
-                        users, chats
+                        users, chats,
+                        business_connection_id=getattr(i, "connection_id", None),
+                        raw_reply_to_message=getattr(i, "reply_to_message", None)
                     )
                 )
 
