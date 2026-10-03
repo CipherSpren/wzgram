@@ -2185,6 +2185,7 @@ class Client(Methods):
         async with lock:
             media = await self.get_session(dc_id, is_media=True)
             window = media_window(media.auth_key, dc_id)
+            window.fixed = bool(getattr(self.me, "is_premium", False))
             n = window.connections(n)
             extras = []
 
