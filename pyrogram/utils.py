@@ -130,10 +130,8 @@ def get_input_media_from_file_id(
             live_photo=live_photo,
             video=get_input_media_from_file_id(
                 live_photo_video_file_id,
-                expected_file_type=FileType.VIDEO,
-                has_spoiler=has_spoiler,
-                live_photo=live_photo
-            ) if live_photo else None
+                expected_file_type=FileType.VIDEO
+            ).id if live_photo else None
         )
 
     if file_type in DOCUMENT_TYPES:
@@ -668,6 +666,9 @@ async def build_input_rich_message(
     media: Optional[List["types.InputRichMessageMedia"]] = None,
     chat_id: Optional[Union[int, str]] = None
 ) -> "raw.base.InputRichMessage":
+    if isinstance(rich_text, types.RichMessage):
+        return rich_text._write()
+
     if isinstance(rich_text, types.InputRichMessage):
         await rich_text._upload(client, chat_id)
 

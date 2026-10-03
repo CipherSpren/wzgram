@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import pyrogram
+from pyrogram.session.session import media_window
 from pyrogram import enums, raw, types, utils
 from pyrogram.dispatcher import Dispatcher
 from pyrogram.errors import UserNotParticipant
@@ -3764,18 +3765,26 @@ async def test_a_media_session_handed_out_is_not_reaped_before_its_first_request
             self.stopped = True
 
     class _Client:
+        me = None
         _get_media_session_pool = pyrogram.Client._get_media_session_pool
         reap_media_sessions = pyrogram.Client.reap_media_sessions
         MEDIA_SESSION_IDLE_TIMEOUT = 300
 
         def __init__(self):
+            self.media = _MediaSession()
+            self.media.auth_key = b"media-key"
             self.media_session_pools = {2: [_MediaSession()]}
             self._media_sessions_locks = {}
 
+        async def get_session(self, dc_id, is_media=False):
+            return self.media
+
     client = _Client()
     session = client.media_session_pools[2][0]
+    # the main media session is the first connection; the pooled one is the second
+    media_window(client.media.auth_key, 2).size = 2
 
-    assert await client._get_media_session_pool(2, 1) == [session]
+    assert await client._get_media_session_pool(2, 2) == [client.media, session]
     assert await client.reap_media_sessions() == 0
     assert not session.stopped
 _EPHEMERAL_SHORTCUTS = ["reply", "answer", "reply_rich", "answer_rich"] + [
@@ -5669,3 +5678,270 @@ async def test_resolve_peer_keeps_peer_id_invalid_for_a_phone_telegram_does_not_
 
     with pytest.raises(pyrogram.errors.PeerIdInvalid):
         await client.resolve_peer("+999 000 0000")
+
+
+def _photo_file_id():
+    from pyrogram.file_id import FileId, FileType, ThumbnailSource
+
+    return FileId(file_type=FileType.PHOTO, dc_id=2, media_id=1, access_hash=2, file_reference=b"r",
+                  thumbnail_source=ThumbnailSource.THUMBNAIL, volume_id=0, local_id=0,
+                  thumbnail_file_type=FileType.PHOTO, thumbnail_size="y").encode()
+
+
+def test_live_photo_by_file_id_sends_the_video_as_an_input_document():
+    from pyrogram.file_id import FileId, FileType
+
+    video = FileId(file_type=FileType.VIDEO, dc_id=2, media_id=3, access_hash=4, file_reference=b"v").encode()
+    media = utils.get_input_media_from_file_id(
+        _photo_file_id(), FileType.PHOTO, live_photo=True, live_photo_video_file_id=video
+    )
+
+    assert media.video == raw.types.InputDocument(id=3, access_hash=4, file_reference=b"v")
+    assert raw.core.TLObject.read(BytesIO(media.write())).video == media.video
+
+
+@pytest.mark.parametrize("make, expected", [
+    (lambda path: types.InputMediaPhoto(path, has_spoiler=True), raw.types.InputMediaPhoto),
+    (lambda path: types.InputMediaVideo(path, has_spoiler=True), raw.types.InputMediaDocument),
+    (lambda path: types.InputMediaPhoto(_photo_file_id(), has_spoiler=True), raw.types.InputMediaPhoto),
+])
+async def test_edit_inline_media_sends_the_right_media_with_its_spoiler(monkeypatch, tmp_path, make, expected):
+    import pyrogram.methods.messages.edit_inline_media as module
+
+    path = tmp_path / "a.jpg"
+    path.write_bytes(b"\xff\xd8\xff")
+    client = pyrogram.Client("inline", api_id=1, api_hash="x", in_memory=True)
+    sent = []
+
+    async def save_file(*args, **kwargs):
+        return raw.types.InputFile(id=1, parts=1, name="a.jpg", md5_checksum="")
+
+    async def invoke(query, *args, **kwargs):
+        if isinstance(query.media, raw.types.InputMediaUploadedPhoto):
+            return raw.types.MessageMediaPhoto(
+                photo=raw.types.Photo(id=5, access_hash=6, file_reference=b"r", date=0, sizes=[], dc_id=2)
+            )
+        return raw.types.MessageMediaDocument(
+            document=raw.types.Document(id=7, access_hash=8, file_reference=b"r", date=0,
+                                        mime_type="video/mp4", size=1, dc_id=2, attributes=[])
+        )
+
+    async def invoke_inline(client, dc_id, query, business_connection_id=None):
+        sent.append(query)
+        return True
+
+    monkeypatch.setattr(client, "save_file", save_file)
+    monkeypatch.setattr(client, "invoke", invoke)
+    monkeypatch.setattr(module, "invoke_inline", invoke_inline)
+    inline_message_id = utils.pack_inline_message_id(
+        raw.types.InputBotInlineMessageID(dc_id=2, id=1, access_hash=2)
+    )
+
+    assert await client.edit_inline_media(inline_message_id, make(str(path))) is True
+    assert isinstance(sent[0].media, expected)
+    assert sent[0].media.spoiler is True
+
+
+def _roundtrip(obj):
+    return raw.core.TLObject.read(BytesIO(obj.write()))
+
+
+def _business_client():
+    client = pyrogram.Client("business", api_id=1, api_hash="x", in_memory=True)
+    client.me = SimpleNamespace(id=222, is_bot=True, is_premium=False)
+    client.sent = []
+
+    async def resolve_peer(peer):
+        return raw.types.InputPeerUser(user_id=111, access_hash=1)
+
+    async def invoke(query, *args, **kwargs):
+        client.sent.append(query)
+        count = len(query.multi_media) if isinstance(query, raw.functions.messages.SendMultiMedia) else 1
+        media = None
+        if isinstance(getattr(query, "media", None), raw.types.InputMediaPoll):
+            media = raw.types.MessageMediaPoll(
+                poll=raw.types.Poll(id=9, question=raw.types.TextWithEntities(text="q", entities=[]),
+                                    answers=[], hash=0, closed=True),
+                results=raw.types.PollResults()
+            )
+        return raw.types.Updates(
+            updates=[
+                raw.types.UpdateBotNewBusinessMessage(connection_id="BC", qts=1, message=_roundtrip(raw.types.Message(
+                    id=n + 1, peer_id=raw.types.PeerUser(user_id=111), date=1700000000, message="hi",
+                    from_id=raw.types.PeerUser(user_id=222), out=True, media=media
+                )))
+                for n in range(count)
+            ],
+            users=[_roundtrip(raw.types.User(id=111, access_hash=1, first_name="Ann")),
+                   _roundtrip(raw.types.User(id=222, access_hash=2, first_name="Bot", bot=True,
+                                             bot_info_version=1))],
+            chats=[], date=1700000000, seq=0
+        )
+
+    client.resolve_peer = resolve_peer
+    client.invoke = invoke
+    return client
+
+
+@pytest.mark.parametrize("call", [
+    lambda c: c.send_message(111, "hi", business_connection_id="BC"),
+    lambda c: c.send_dice(111, business_connection_id="BC"),
+    lambda c: c.send_location(111, 1.0, 2.0, business_connection_id="BC"),
+    lambda c: c.send_cached_media(111, _photo_file_id(), business_connection_id="BC"),
+    lambda c: c.send_game(111, "game", business_connection_id="BC"),
+    lambda c: c.edit_message_text(111, 1, "x", business_connection_id="BC"),
+    lambda c: c.pin_chat_message(111, 1, business_connection_id="BC"),
+])
+async def test_business_sends_and_edits_return_the_message(call):
+    message = await call(_business_client())
+
+    assert isinstance(message, types.Message)
+    assert message.business_connection_id == "BC"
+
+
+async def test_business_forward_and_media_group_return_every_message():
+    client = _business_client()
+
+    forwarded = await client.forward_messages(111, 111, [1], business_connection_id="BC")
+    group = await client.send_media_group(
+        111, [types.InputMediaPhoto(_photo_file_id()), types.InputMediaPhoto(_photo_file_id())],
+        business_connection_id="BC"
+    )
+
+    assert [m.business_connection_id for m in forwarded] == ["BC"]
+    assert [m.business_connection_id for m in group] == ["BC", "BC"]
+
+
+async def test_business_stop_poll_closes_the_poll_without_reading_the_chat():
+    client = _business_client()
+
+    poll = await client.stop_poll(111, 1, business_connection_id="BC")
+
+    assert poll.is_closed is True
+    assert [type(q) for q in client.sent] == [raw.functions.messages.EditMessage]
+    assert client.sent[0].media.poll.closed is True
+
+
+async def test_set_game_score_on_an_inline_message_returns_true_and_edits_by_default():
+    client = pyrogram.Client("game", api_id=1, api_hash="x", in_memory=True)
+    sent = []
+
+    async def resolve_peer(peer):
+        return raw.types.InputPeerUser(user_id=111, access_hash=1)
+
+    async def invoke(query, *args, **kwargs):
+        sent.append(query)
+        return True
+
+    client.resolve_peer = resolve_peer
+    client.invoke = invoke
+    inline_message_id = utils.pack_inline_message_id(
+        raw.types.InputBotInlineMessageID(dc_id=2, id=1, access_hash=2)
+    )
+
+    assert await client.set_game_score(111, 10, inline_message_id=inline_message_id) is True
+    await client.set_game_score(111, 10, inline_message_id=inline_message_id, disable_edit_message=True)
+
+    assert [q.edit_message for q in sent] == [True, None]
+
+
+def _dialog(user_id, top_message):
+    return raw.types.Dialog(
+        peer=raw.types.PeerUser(user_id=user_id), top_message=top_message, read_inbox_max_id=0,
+        read_outbox_max_id=0, unread_count=0, unread_mentions_count=0, unread_reactions_count=0,
+        unread_poll_votes_count=0, notify_settings=raw.types.PeerNotifySettings()
+    )
+
+
+@pytest.mark.parametrize("with_message, offset_id", [(True, 5), (False, 0)])
+async def test_get_dialogs_pages_past_a_dialog_without_a_top_message(with_message, offset_id):
+    client = pyrogram.Client("dialogs", api_id=1, api_hash="x", in_memory=True)
+    sent = []
+    messages = [_roundtrip(raw.types.Message(
+        id=5, peer_id=raw.types.PeerUser(user_id=111), date=1700000000, message="a"
+    ))] if with_message else []
+
+    async def resolve_peer(peer):
+        return raw.types.InputPeerUser(user_id=peer, access_hash=1)
+
+    async def invoke(query, *args, **kwargs):
+        sent.append(query)
+        if len(sent) > 1:
+            return raw.types.messages.Dialogs(dialogs=[], messages=[], chats=[], users=[])
+        return raw.types.messages.DialogsSlice(
+            count=50, dialogs=[_dialog(111, 5), _dialog(333, 9)], messages=messages, chats=[],
+            users=[_roundtrip(raw.types.User(id=111, access_hash=1, first_name="Ann")),
+                   _roundtrip(raw.types.User(id=333, access_hash=3, first_name="Cy"))]
+        )
+
+    client.resolve_peer = resolve_peer
+    client.invoke = invoke
+
+    assert [d.chat.id async for d in client.get_dialogs()] == [111, 333]
+    assert len(sent) == 2
+    assert (sent[1].offset_id, sent[1].offset_peer.user_id) == (offset_id, 333)
+
+
+async def test_get_call_members_stops_when_there_is_no_next_page():
+    client = pyrogram.Client("call", api_id=1, api_hash="x", in_memory=True)
+    sent = []
+
+    async def resolve_peer(peer):
+        return raw.types.InputPeerChannel(channel_id=1, access_hash=1)
+
+    async def invoke(query, *args, **kwargs):
+        if isinstance(query, raw.functions.channels.GetFullChannel):
+            return SimpleNamespace(full_chat=SimpleNamespace(call=raw.types.InputGroupCall(id=1, access_hash=1)))
+        sent.append(query.offset)
+        return raw.types.phone.GroupParticipants(
+            count=1, next_offset="", chats=[], version=1,
+            participants=[raw.types.GroupCallParticipant(peer=raw.types.PeerUser(user_id=111), date=1700000000,
+                                                         source=1)],
+            users=[_roundtrip(raw.types.User(id=111, access_hash=1, first_name="Ann"))]
+        )
+
+    client.resolve_peer = resolve_peer
+    client.invoke = invoke
+
+    members = [m async for m in client.get_call_members(-1001)]
+
+    assert len(members) == 1
+    assert sent == [""]
+
+
+async def _received_rich_message(client, part=False):
+    blocks = [raw.types.PageBlockParagraph(text=raw.types.TextConcat(texts=[
+        raw.types.TextPlain(text="Hi "),
+        raw.types.TextMentionName(text=raw.types.TextPlain(text="you"), user_id=111),
+    ]))]
+    photo = raw.types.Photo(id=5, access_hash=6, file_reference=b"r", date=0, sizes=[], dc_id=2)
+    rich = raw.types.RichMessage(blocks=blocks, photos=[photo], documents=[], part=part)
+    users = {111: _roundtrip(raw.types.User(id=111, access_hash=9, first_name="Ann"))}
+    return blocks, await types.RichMessage._parse(client, rich, users, {})
+
+
+@pytest.mark.parametrize("partial", [False, True])
+async def test_a_received_rich_message_can_be_copied(partial):
+    client = pyrogram.Client("rich", api_id=1, api_hash="x", in_memory=True)
+    blocks, rich = await _received_rich_message(client, part=partial)
+    full_blocks, full = await _received_rich_message(client)
+    sent, fetched = [], []
+
+    async def send_message(chat_id, **kwargs):
+        sent.append(await utils.build_input_rich_message(client, kwargs["rich_text"]))
+        return "copied"
+
+    async def get_rich_message(chat_id, message_id):
+        fetched.append((chat_id, message_id))
+        return SimpleNamespace(rich_message=full)
+
+    client.send_message = send_message
+    client.get_rich_message = get_rich_message
+    message = types.Message(id=7, chat=types.Chat(id=-1001, type=enums.ChatType.SUPERGROUP),
+                            rich_message=rich, client=client)
+
+    assert await message.copy(42) == "copied"
+    assert fetched == ([(-1001, 7)] if partial else [])
+    assert sent[0].blocks == (full_blocks if partial else blocks)
+    assert sent[0].photos == [raw.types.InputPhoto(id=5, access_hash=6, file_reference=b"r")]
+    assert sent[0].users == [raw.types.InputUser(user_id=111, access_hash=9)]

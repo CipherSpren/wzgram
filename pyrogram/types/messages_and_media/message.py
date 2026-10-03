@@ -10616,6 +10616,32 @@ class Message(Object, Update):
                         self.chat.id, self.id)
         elif self.empty:
             log.warning("Empty messages cannot be copied.")
+        elif self.rich_message:
+            rich_message = self.rich_message
+
+            if rich_message.is_partial:
+                rich_message = (await self._client.get_rich_message(self.chat.id, self.id)).rich_message
+
+            return await self._client.send_message(
+                chat_id,
+                rich_text=rich_message,
+                disable_notification=disable_notification,
+                message_thread_id=message_thread_id,
+                reply_parameters=reply_parameters,
+                reply_to_chat_id=reply_to_chat_id,
+                reply_to_message_id=reply_to_message_id,
+                quote_text=quote_text,
+                quote_entities=quote_entities,
+                schedule_date=schedule_date,
+                protect_content=protect_content,
+                business_connection_id=business_connection_id,
+                allow_paid_broadcast=allow_paid_broadcast,
+                paid_message_star_count=paid_message_star_count,
+                direct_messages_topic_id=direct_messages_topic_id,
+                effect_id=effect_id,
+                suggested_post_parameters=suggested_post_parameters,
+                reply_markup=self.reply_markup if reply_markup is object else reply_markup
+            )
         elif self.text:
             return await self._client.send_message(
                 chat_id,

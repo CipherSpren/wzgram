@@ -32,9 +32,10 @@ import pyrogram
 from pyrogram import StopTransmission
 from pyrogram import raw
 from pyrogram import utils
-from pyrogram.errors import RPCError
+from pyrogram.errors import FloodPremiumWait, FloodWait, RPCError
 from pyrogram.methods.rate_limiter import TokenBucket
 from pyrogram.session import Session
+from pyrogram.session.session import media_window
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +121,9 @@ class SaveFile:
             if path is None:
                 return None
 
-            async def worker(session):
+            async def worker(pool, i):
+                window = media_window(pool[0].auth_key, dc_id)
+
                 while True:
                     data = await queue.get()
 
@@ -128,7 +131,7 @@ class SaveFile:
                         return
 
                     try:
-                        await _send_part(session, data)
+                        await _send_part(window.pick(pool, i), data)
                         _acked[0] += 1
                     finally:
                         data = None
@@ -144,24 +147,23 @@ class SaveFile:
                     except StopTransmission:
                         raise
                     except (OSError, TimeoutError, RPCError, asyncio.TimeoutError) as e:
+                        flood = isinstance(e, (FloodWait, FloodPremiumWait))
+
+                        if isinstance(e, RPCError) and not flood and not 500 <= e.CODE < 600:
+                            raise
+
                         if attempt == MAX_RETRIES - 1:
                             log.exception(
                                 "Upload part failed after %d attempts",
                                 MAX_RETRIES,
                             )
                             raise
-                        delay = min(2 ** attempt, 30)
-                        err_str = str(e)
-                        if "FLOOD" in err_str:
-                            for part in err_str.split():
-                                if part.isdigit():
-                                    delay = min(int(part), 300)
-                                    break
+
                         log.warning(
                             "Retrying upload part (attempt %d/%d): %s",
-                            attempt + 1, MAX_RETRIES, err_str[:120],
+                            attempt + 1, MAX_RETRIES, str(e)[:120],
                         )
-                        await asyncio.sleep(delay)
+                        await asyncio.sleep(min(e.value, 300) if flood else min(2 ** attempt, 30))
 
             async def read_batch():
                 batch_size = min(PART_SIZE * n_workers, MAX_BATCH)
@@ -231,11 +233,11 @@ class SaveFile:
 
                 _acked = [0]
 
-                n_workers = len(pool) * 2
+                n_workers = max(len(pool), pool_size) * 2
                 queue = asyncio.Queue(n_workers)
                 budget = ReadAhead(self.read_ahead_slots)
                 workers = [
-                    self.loop.create_task(worker(pool[i % len(pool)]))
+                    self.loop.create_task(worker(pool, i))
                     for i in range(n_workers)
                 ]
             except BaseException:

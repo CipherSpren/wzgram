@@ -78,6 +78,63 @@ class ConnectionLost:
     pass
 
 
+class MediaWindow:
+    GROW_AFTER = 60
+    SHRINK_COOLDOWN = 2
+
+    __slots__ = ("size", "fixed", "_changed", "_shrunk")
+
+    def __init__(self):
+        self.size = 1
+        self.fixed = False
+        self._changed = None
+        self._shrunk = float("-inf")
+
+    def connections(self, wanted: int, now: Optional[float] = None) -> int:
+        now = time.monotonic() if now is None else now
+
+        if self.fixed:
+            self.size = max(self.size, wanted)
+            return max(1, wanted)
+
+        if self._changed is None:
+            self._changed = now
+        elif wanted > self.size and now - self._changed >= self.GROW_AFTER:
+            self.size += 1
+            self._changed = now
+
+        return max(1, min(self.size, wanted))
+
+    def pick(self, pool: list, i: int) -> "Session":
+        session = pool[i % self.connections(len(pool))]
+        return pool[0] if session.is_closed else session
+
+    def shrink(self, now: Optional[float] = None):
+        now = time.monotonic() if now is None else now
+
+        if self.fixed or now - self._shrunk < self.SHRINK_COOLDOWN:
+            return
+
+        self._shrunk = self._changed = now
+
+        if self.size > 1:
+            self.size //= 2
+            log.info("Media DC is refusing connections, using %s", self.size)
+
+
+_media_windows = {}
+
+
+def media_window(auth_key: bytes, dc_id: int) -> MediaWindow:
+    key = (auth_key, dc_id)
+    window = _media_windows.get(key)
+
+    if window is None:
+        window = _media_windows[key] = MediaWindow()
+
+    return window
+
+
 class Session:
     START_TIMEOUT = 2
     WAIT_TIMEOUT = 15
@@ -91,7 +148,7 @@ class Session:
     MAX_SKEW_BEHIND = 300
     MAX_SKEW_BREACHES = 3
     MAX_INFLIGHT_PACKETS = int(os.environ.get("WZGRAM_MAX_INFLIGHT_PACKETS", 16))
-    MAX_INFLIGHT_MEDIA = int(os.environ.get("WZGRAM_MAX_INFLIGHT_MEDIA", 6))
+    MAX_INFLIGHT_MEDIA = int(os.environ.get("WZGRAM_MAX_INFLIGHT_MEDIA", 16))
     INLINE_CRYPTO_MAX = int(os.environ.get("WZGRAM_INLINE_CRYPTO_MAX", 32 * 1024))
 
     TRANSPORT_ERRORS = Connection.TRANSPORT_ERRORS
@@ -114,6 +171,7 @@ class Session:
         self.test_mode = test_mode
         self.is_media = is_media
         self.is_cdn = is_cdn
+        self._windowed = is_media and not is_cdn
         self.server_address = server_address
         self.port = port
         self.crypto_executor = crypto_executor or get_crypto_executor()
@@ -366,6 +424,10 @@ class Session:
             if result.value is None:
                 result.value = value
             result.event.set()
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
 
     @property
     def is_restarting(self) -> bool:
@@ -647,6 +709,9 @@ class Session:
             if reason is not None:
                 log.warning(reason)
 
+                if self._windowed and not self._stopping:
+                    media_window(self.auth_key, self.dc_id).shrink()
+
                 self._fail_pending(ConnectionResetError(reason))
 
                 if self.is_started.is_set():
@@ -801,6 +866,7 @@ class Session:
         sleep_threshold: float
     ):
         slept = 0.0
+        backoff = 0
         flood_budget = sleep_threshold * Session.MAX_RETRIES
         retries = max(1, retries)
 
@@ -846,13 +912,17 @@ class Session:
                     str(e) or repr(e)
                 )
 
+                if self._windowed and isinstance(e, (InternalServerError, ServiceUnavailable, TimeoutError)):
+                    media_window(self.auth_key, self.dc_id).shrink()
+
                 if isinstance(e, ConnectionResetError):
                     await asyncio.sleep(0.1)
                 elif isinstance(e, (InternalServerError, ServiceUnavailable)) or (
                     isinstance(e, TimeoutError)
                     and time.monotonic() - self.last_packet_received < self.WAIT_TIMEOUT
                 ):
-                    await asyncio.sleep(1)
+                    backoff += 1
+                    await asyncio.sleep(min(2 ** (backoff - 1), 16))
                 else:
                     await self.restart()
 

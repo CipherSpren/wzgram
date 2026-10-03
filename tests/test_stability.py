@@ -780,6 +780,8 @@ CHUNK = 1024 * 1024
 
 
 class ChunkSession:
+    auth_key = b"chunk-key"
+    is_closed = False
 
     def __init__(self, file_size: int):
         self.file_size = file_size
@@ -994,7 +996,7 @@ async def test_media_connections_ship_with_a_cap():
     )
 
     assert session._invoke_semaphore is not None
-    assert 1 <= Session.MAX_INFLIGHT_MEDIA <= 8, (
+    assert 1 <= Session.MAX_INFLIGHT_MEDIA <= 16, (
         f"a cap of {Session.MAX_INFLIGHT_MEDIA} parts per connection is outside "
         "the range that keeps latency under the transfer deadline"
     )
