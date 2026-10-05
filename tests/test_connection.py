@@ -1466,6 +1466,33 @@ def test_drop_connection_swallows_an_oserror_on_close() -> None:
     assert connection._reader is None
 
 
+class _SendingWriter(_RecordingWriter):
+    def write(self, data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+
+async def test_cancelled_request_drops_the_pooled_connection() -> None:
+    connection = _HttpConnection("relay.invalid", port=443, ssl_context=None)
+
+    writer = _SendingWriter()
+    connection._writer = writer
+    connection._reader = asyncio.StreamReader()
+
+    task = asyncio.create_task(connection.request("POST", path="/up"))
+    await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert connection._writer is None
+    assert connection._reader is None
+    assert writer.closed is True
+
+
 async def test_read_body_content_length() -> None:
     connection = _connection_reading(b"downlink batch")
 

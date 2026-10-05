@@ -333,6 +333,10 @@ class _HttpConnection:
                     last_error, last_detail = e, "timed out"
                     self._drop_connection()
 
+                except BaseException:
+                    self._drop_connection()
+                    raise
+
         msg = f"{method} {path}: {last_detail}"
         raise WebCarrierError(msg) from last_error
 
@@ -378,7 +382,6 @@ class _HttpConnection:
         # The relay keeps the pool alive, but an intermediary may still ask for
         #  the connection back; the next request then reconnects.
         if head.headers.get("connection", "").lower() == "close":
-            self._writer.close()
             self._drop_connection()
 
         return HttpResponse(status=head.status, headers=head.headers, body=response_body)
