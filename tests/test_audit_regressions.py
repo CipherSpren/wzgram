@@ -4569,6 +4569,29 @@ def test_excluding_a_plugin_handler_removes_it(tmp_path, monkeypatch):
     assert removed == added
 
 
+def test_loading_plugins_again_does_not_register_handlers_twice(tmp_path, monkeypatch):
+    client = _plugin_client(tmp_path, monkeypatch, "reloaded", {})
+
+    client.load_plugins()
+    client.load_plugins()
+
+    assert [h.callback.__name__ for h in client.dispatcher.groups[0]] == ["ping"], (
+        "a restart that keeps handlers must not make plugin handlers run twice"
+    )
+
+
+async def test_adding_a_handler_twice_under_a_running_loop_keeps_one():
+    client = _DispatcherClient()
+    dispatcher = Dispatcher(client)
+    handler = MessageHandler(lambda c, m: None)
+
+    dispatcher.add_handler(handler, 0)
+    dispatcher.add_handler(handler, 0)
+    await asyncio.sleep(0.05)
+
+    assert dispatcher.groups[0] == [handler]
+
+
 @pytest.mark.parametrize("name", [n for n in _EPHEMERAL_SHORTCUTS if n.startswith("reply")])
 @pytest.mark.parametrize("is_bot, deadline", [(True, 1700000013), (False, None)])
 async def test_a_bot_reply_to_an_ephemeral_message_carries_the_quote_deadline(name, is_bot, deadline):
