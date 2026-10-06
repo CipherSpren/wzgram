@@ -4728,6 +4728,40 @@ async def test_an_ephemeral_reply_to_an_ephemeral_message_finds_it_when_it_is_kn
     client.get_messages.assert_not_awaited()
 
 
+async def test_a_reply_chain_does_not_keep_every_message_alive():
+    import gc
+    import weakref
+    from pyrogram import raw, types
+
+    client = _ephemeral_client()
+    users, chats = _ephemeral_parties()
+    refs = []
+
+    for i in range(1, 41):
+        message = await types.Message._parse(client, raw.types.Message(
+            id=i, peer_id=raw.types.PeerChannel(channel_id=100), from_id=raw.types.PeerUser(user_id=5),
+            date=0, message="x", entities=[], restriction_reason=[],
+            reply_to=raw.types.MessageReplyHeader(reply_to_msg_id=i - 1) if i > 1 else None,
+        ), users, chats)
+        chat_id = message.chat.id
+        refs.append(weakref.ref(message))
+        del message
+
+    gc.collect()
+    newest = client.message_cache[(chat_id, 40)]
+
+    assert newest.reply_to_message.id == 39
+    assert newest.reply_to_message.reply_to_message is None
+    assert newest.reply_to_message._client is client
+    assert client.message_cache[(chat_id, 39)].reply_to_message.id == 38, (
+        "cutting the chain on the link must not touch the cached message itself"
+    )
+    assert sum(r() is not None for r in refs) == client.message_cache.capacity, (
+        "evicted messages must be collectable, not pinned by the reply chain"
+    )
+    client.get_messages.assert_not_awaited()
+
+
 @pytest.mark.parametrize("sender, receiver", [(5, 7), (7, 9)])
 async def test_an_ephemeral_reply_is_not_matched_to_a_message_between_other_users(sender, receiver):
     from pyrogram import raw, types
