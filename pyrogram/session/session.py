@@ -803,6 +803,7 @@ class Session:
         slept = 0.0
         flood_budget = sleep_threshold * Session.MAX_RETRIES
         retries = max(1, retries)
+        attempt = 0
 
         while retries > 0:
             if not self.is_started.is_set():
@@ -839,6 +840,8 @@ class Session:
                 if retries == 0:
                     raise
 
+                attempt += 1
+
                 (log.warning if retries < 2 else log.info)(
                     '[%s] Retrying "%s" (attempt %s/%s) due to: %s',
                     self.client.name, query_name,
@@ -852,7 +855,7 @@ class Session:
                     isinstance(e, TimeoutError)
                     and time.monotonic() - self.last_packet_received < self.WAIT_TIMEOUT
                 ):
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(min(2 ** (attempt - 1), 30))
                 else:
                     await self.restart()
 
