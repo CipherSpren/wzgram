@@ -176,6 +176,7 @@ from .rich_text import (
     RichTextSubscript,
     RichTextSuperscript,
     RichTextTextMention,
+    RichTextTonAddress,
     RichTextUnderline,
     RichTextUrl,
 )
@@ -389,6 +390,7 @@ __all__ = [
     "RichTextSubscript",
     "RichTextSuperscript",
     "RichTextTextMention",
+    "RichTextTonAddress",
     "RichTextUnderline",
     "RichTextUrl",
     "SavedCredentials",

@@ -69,6 +69,7 @@ class RichText(Object):
     - :obj:`~pyrogram.types.RichTextEmailAddress`
     - :obj:`~pyrogram.types.RichTextPhoneNumber`
     - :obj:`~pyrogram.types.RichTextBankCardNumber`
+    - :obj:`~pyrogram.types.RichTextTonAddress`
     - :obj:`~pyrogram.types.RichTextMention`
     - :obj:`~pyrogram.types.RichTextHashtag`
     - :obj:`~pyrogram.types.RichTextCashtag`
@@ -209,6 +210,11 @@ class RichText(Object):
                 text=await RichText._parse(client, rich_text.text, users, chats),
                 bank_card_number=_plain_text(await RichText._parse(client, rich_text.text, users, chats)),
             )
+
+        if isinstance(rich_text, raw.types.TextTonAddress):
+            text = await RichText._parse(client, rich_text.text, users, chats)
+
+            return RichTextTonAddress(text=text, address=_plain_text(text))
 
         if isinstance(rich_text, raw.types.TextMention):
             content = await RichText._parse(client, rich_text.text, users, chats)
@@ -597,6 +603,24 @@ class RichTextBankCardNumber(RichText):
 
         self.text = text
         self.bank_card_number = bank_card_number
+
+
+class RichTextTonAddress(RichText):
+    """A TON wallet address.
+
+    Parameters:
+        text (:obj:`~pyrogram.types.RichText`):
+            The text.
+
+        address (``str``):
+            The TON address.
+    """
+
+    def __init__(self, text: "types.RichText", address: str):
+        super().__init__()
+
+        self.text = text
+        self.address = address
 
 
 class RichTextMention(RichText):

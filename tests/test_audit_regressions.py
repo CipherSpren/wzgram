@@ -6344,6 +6344,20 @@ async def test_a_mentioned_user_is_resolved_at_any_depth_of_a_received_rich_mess
     assert all(user is not None and user.id == 42 for user in found)
 
 
+async def test_a_ton_address_in_rich_text_is_kept():
+    text = raw.types.TextConcat(texts=[
+        raw.types.TextPlain(text="to "),
+        raw.types.TextTonAddress(text=raw.types.TextPlain(text="EQabc")),
+    ])
+
+    parsed = await types.RichText._parse(None, text)
+
+    assert parsed[0] == "to "
+    assert isinstance(parsed[1], types.RichTextTonAddress)
+    assert parsed[1].text == "EQabc"
+    assert parsed[1].address == "EQabc"
+
+
 class _TooLongClient:
     handle_updates = pyrogram.Client.handle_updates
     _save_update_state = pyrogram.Client._save_update_state
