@@ -16,7 +16,9 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import List, Optional, Union
+import pathlib
+import re
+from typing import List, Optional, Type, Union
 
 import pyrogram
 from pyrogram import raw, types, utils
@@ -55,10 +57,13 @@ async def _upload_media(
     client: "pyrogram.Client",
     chat_id: Optional[Union[int, str]],
     media: Union[str, "types.InputMedia", "raw.base.InputPhoto", "raw.base.InputDocument"],
-    is_photo: bool,
+    media_type: Type["types.InputMedia"],
 ) -> Union["raw.base.InputPhoto", "raw.base.InputDocument"]:
     if isinstance(media, (raw.types.InputPhoto, raw.types.InputDocument)):
         return media
+
+    if isinstance(media, str) and (pathlib.Path(media).is_file() or re.match("^https?://", media)):
+        media = media_type(media)
 
     if isinstance(media, str):
         media = utils.get_input_media_from_file_id(media)
@@ -85,7 +90,7 @@ async def _upload_media(
         )
     )
 
-    if is_photo:
+    if issubclass(media_type, types.InputMediaPhoto):
         return raw.types.InputPhoto(
             id=uploaded_media.photo.id,
             access_hash=uploaded_media.photo.access_hash,
@@ -576,7 +581,7 @@ class InputRichBlockDocument(InputRichBlock):
         if self.document is None:
             return
 
-        media = await _upload_media(client, chat_id, self.document, is_photo=False)
+        media = await _upload_media(client, chat_id, self.document, types.InputMediaDocument)
 
         documents.append(media)
 
@@ -930,7 +935,7 @@ class InputRichBlockAnimation(InputRichBlock):
         if self.animation is None:
             return
 
-        media = await _upload_media(client, chat_id, self.animation, is_photo=False)
+        media = await _upload_media(client, chat_id, self.animation, types.InputMediaAnimation)
 
         documents.append(media)
 
@@ -987,7 +992,7 @@ class InputRichBlockAudio(InputRichBlock):
         if self.audio is None:
             return
 
-        media = await _upload_media(client, chat_id, self.audio, is_photo=False)
+        media = await _upload_media(client, chat_id, self.audio, types.InputMediaAudio)
 
         documents.append(media)
 
@@ -1063,7 +1068,7 @@ class InputRichBlockPhoto(InputRichBlock):
         if self.photo is None:
             return
 
-        media = await _upload_media(client, chat_id, self.photo, is_photo=True)
+        media = await _upload_media(client, chat_id, self.photo, types.InputMediaPhoto)
 
         photos.append(media)
 
@@ -1138,7 +1143,7 @@ class InputRichBlockVideo(InputRichBlock):
         if self.video is None:
             return
 
-        media = await _upload_media(client, chat_id, self.video, is_photo=False)
+        media = await _upload_media(client, chat_id, self.video, types.InputMediaVideo)
 
         documents.append(media)
 
@@ -1195,7 +1200,7 @@ class InputRichBlockVoiceNote(InputRichBlock):
         if self.voice is None:
             return
 
-        media = await _upload_media(client, chat_id, self.voice, is_photo=False)
+        media = await _upload_media(client, chat_id, self.voice, types.InputMediaVoiceNote)
 
         documents.append(media)
 
