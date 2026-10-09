@@ -676,6 +676,50 @@ async def test_the_updates_queue_stays_bounded():
     )
 
 
+async def test_update_batches_waiting_for_handlers_are_capped(monkeypatch, caplog):
+    class BlockedClient(DummyClient):
+        def __init__(self):
+            super().__init__()
+            self.gate = asyncio.Event()
+
+        async def handle_updates(self, body):
+            await self.gate.wait()
+            self.updates.append(body)
+
+    client = BlockedClient()
+    session = make_session(client)
+    session.connection = RecordingConnection()
+    monkeypatch.setattr(Session, "MAX_PENDING_UPDATES", 40)
+
+    body = raw.types.UpdatesTooLong().write()
+    base = MsgId() | 1
+
+    with caplog.at_level("WARNING"):
+        for i in range(100):
+            monkeypatch.setattr(
+                session_mod.warpcrypto, "unpack_message", unpacked_as(base + 4 * i, body)
+            )
+            await session.handle_packet(b"ignored")
+
+        assert session._pending_updates == 40, (
+            "update batches must stop piling up once handlers fall behind"
+        )
+        assert session._dropped_updates == 60
+        assert caplog.text.count("Dropping") == 1, "one warning per overload, not one per batch"
+
+        client.gate.set()
+
+        for _ in range(100):
+            if session._pending_updates == 0:
+                break
+            await asyncio.sleep(0.01)
+
+    assert len(client.updates) == 40
+    assert session._pending_updates == 0
+    assert session._dropped_updates == 0
+    assert "Dropped 60 update batches" in caplog.text
+
+
 class FakeSession:
     def __init__(self, last_used: float, results=None):
         self.last_used = last_used
@@ -696,6 +740,35 @@ class ReapableClient:
     def __init__(self):
         self.media_session_pools = {}
         self._media_sessions_locks = {}
+        self.media_sessions = {}
+        self.sessions = {}
+        self._session_locks = {}
+        self.session = FakeSession(last_used=0)
+
+
+async def test_reaping_also_closes_the_idle_per_dc_sessions():
+    import time
+
+    now = time.monotonic()
+    client = ReapableClient()
+
+    idle_media = FakeSession(last_used=now - 10_000)
+    idle_foreign = FakeSession(last_used=now - 10_000)
+    busy_media = FakeSession(last_used=now - 10_000, results={1: object()})
+    fresh_foreign = FakeSession(last_used=now)
+    client.media_sessions = {2: idle_media, 4: busy_media}
+    client.sessions = {2: idle_foreign, 4: fresh_foreign, 1: client.session}
+
+    reaped = await client.reap_media_sessions(idle_timeout=300)
+
+    assert reaped == 2
+    assert idle_media.stopped and idle_foreign.stopped
+    assert not busy_media.stopped and not fresh_foreign.stopped
+    assert not client.session.stopped, "the main session is never reaped"
+    assert client.media_sessions == {4: busy_media}
+    assert client.sessions == {4: fresh_foreign, 1: client.session}, (
+        "a stopped session left in the dict would be handed out again and fail"
+    )
 
 
 async def test_reaping_closes_idle_sessions_and_keeps_busy_ones():
@@ -780,8 +853,6 @@ CHUNK = 1024 * 1024
 
 
 class ChunkSession:
-    auth_key = b"chunk-key"
-    is_closed = False
 
     def __init__(self, file_size: int):
         self.file_size = file_size
@@ -996,7 +1067,7 @@ async def test_media_connections_ship_with_a_cap():
     )
 
     assert session._invoke_semaphore is not None
-    assert 1 <= Session.MAX_INFLIGHT_MEDIA <= 16, (
+    assert 1 <= Session.MAX_INFLIGHT_MEDIA <= 8, (
         f"a cap of {Session.MAX_INFLIGHT_MEDIA} parts per connection is outside "
         "the range that keeps latency under the transfer deadline"
     )

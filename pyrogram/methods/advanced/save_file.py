@@ -32,10 +32,9 @@ import pyrogram
 from pyrogram import StopTransmission
 from pyrogram import raw
 from pyrogram import utils
-from pyrogram.errors import FloodPremiumWait, FloodWait, RPCError
-from pyrogram.methods.rate_limiter import TokenBucket
+from pyrogram.errors import RPCError, Flood
+from pyrogram.methods.rate_limiter import AdaptiveBucket
 from pyrogram.session import Session
-from pyrogram.session.session import media_window
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ MAX_RETRIES = 16
 STALL_TIMEOUT = 900
 READ_BUFFER = 4 * 1024 * 1024
 MAX_BATCH = 4 * 1024 * 1024
-PACER_BURST = 8
+PACER_BURST = 16
 
 
 async def _stop_workers(queue: asyncio.Queue, workers: list) -> list:
@@ -121,9 +120,7 @@ class SaveFile:
             if path is None:
                 return None
 
-            async def worker(pool, i):
-                window = media_window(pool[0].auth_key, dc_id)
-
+            async def worker(session):
                 while True:
                     data = await queue.get()
 
@@ -131,8 +128,9 @@ class SaveFile:
                         return
 
                     try:
-                        await _send_part(window.pick(pool, i), data)
+                        await _send_part(session, data)
                         _acked[0] += 1
+                        _pacer.on_success()
                     finally:
                         data = None
                         budget.release()
@@ -140,30 +138,37 @@ class SaveFile:
             async def _send_part(session, data):
                 for attempt in range(MAX_RETRIES):
                     try:
-                        await session.invoke(
-                            data, timeout=Session.MEDIA_WAIT_TIMEOUT
-                        )
+                        if not await session.invoke(
+                            data, timeout=Session.MEDIA_WAIT_TIMEOUT, sleep_threshold=0
+                        ):
+                            raise OSError("part not accepted by the server")
                         break
                     except StopTransmission:
                         raise
                     except (OSError, TimeoutError, RPCError, asyncio.TimeoutError) as e:
-                        flood = isinstance(e, (FloodWait, FloodPremiumWait))
-
-                        if isinstance(e, RPCError) and not flood and not 500 <= e.CODE < 600:
+                        if (
+                            isinstance(e, RPCError)
+                            and not isinstance(e, Flood)
+                            and not 500 <= (e.CODE or 0) < 600
+                        ):
                             raise
-
                         if attempt == MAX_RETRIES - 1:
                             log.exception(
                                 "Upload part failed after %d attempts",
                                 MAX_RETRIES,
                             )
                             raise
-
+                        delay = min(2 ** attempt, 30)
+                        err_str = str(e)
+                        if isinstance(e, Flood):
+                            if isinstance(e.value, int):
+                                delay = min(e.value, 300)
+                            _pacer.on_flood()
                         log.warning(
                             "Retrying upload part (attempt %d/%d): %s",
-                            attempt + 1, MAX_RETRIES, str(e)[:120],
+                            attempt + 1, MAX_RETRIES, err_str[:120],
                         )
-                        await asyncio.sleep(min(e.value, 300) if flood else min(2 ** attempt, 30))
+                        await asyncio.sleep(delay)
 
             async def read_batch():
                 batch_size = min(PART_SIZE * n_workers, MAX_BATCH)
@@ -206,13 +211,13 @@ class SaveFile:
             is_big = file_size > 10 * 1024 * 1024
             pool_cap = max(1, math.ceil((file_total_parts - file_part) / 2))
             if is_bot:
-                rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_BOT", 120))
+                rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_BOT", 32))
                 pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_BOT", 8)), POOL_SIZE, pool_cap)
             elif is_premium:
                 rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_PREMIUM", 300))
                 pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_PREMIUM", 14)), POOL_SIZE, pool_cap)
             else:
-                rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_USER", 120))
+                rate_limit = int(os.environ.get("WZGRAM_UPLOAD_RATE_USER", 32))
                 pool_size = min(int(os.environ.get("WZGRAM_UPLOAD_POOL_USER", 12)), POOL_SIZE, pool_cap)
 
             is_missing_part = file_id is not None
@@ -233,11 +238,11 @@ class SaveFile:
 
                 _acked = [0]
 
-                n_workers = max(len(pool), pool_size) * 2
+                n_workers = len(pool) * 2
                 queue = asyncio.Queue(n_workers)
                 budget = ReadAhead(self.read_ahead_slots)
                 workers = [
-                    self.loop.create_task(worker(pool, i))
+                    self.loop.create_task(worker(pool[i % len(pool)]))
                     for i in range(n_workers)
                 ]
             except BaseException:
@@ -245,12 +250,19 @@ class SaveFile:
                 raise
 
             next_batch_task = None
-            _pacer = TokenBucket(rate=rate_limit, burst=PACER_BURST)
+            _pacer = AdaptiveBucket(
+                rate=rate_limit, ceiling=max(rate_limit, 300), burst=PACER_BURST, step=1.0
+            )
             _stalled_since = 0.0
+            _last_reported = -1
 
             async def _report(parts: int) -> None:
-                if not progress:
+                nonlocal _last_reported
+
+                if not progress or parts == _last_reported:
                     return
+
+                _last_reported = parts
 
                 func = functools.partial(
                     progress, min(parts * part_size, file_size), file_size, *progress_args

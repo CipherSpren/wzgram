@@ -987,6 +987,7 @@ def pyrogram_api():
             RichTextSubscript
             RichTextSuperscript
             RichTextTextMention
+            RichTextTonAddress
             RichTextUnderline
             RichTextUrl
             SavedCredentials

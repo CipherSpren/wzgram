@@ -17,6 +17,7 @@
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
 from typing import Dict, List, Optional
+from urllib.parse import unquote
 
 import pyrogram
 from pyrogram import raw, types
@@ -81,6 +82,11 @@ class RichMessage(Object):
                 is_rtl=rich_message.rtl,
                 is_partial=rich_message.part,
             )
+            anchors = {}
+
+            if _collect_anchors(rich_message.blocks, anchors):
+                _resolve_anchor_links(parsed.blocks, anchors)
+
             parsed._raw = rich_message
             parsed._users = [
                 raw.types.InputUser(user_id=user.id, access_hash=user.access_hash)
@@ -94,18 +100,123 @@ class RichMessage(Object):
             raise ValueError("Only a received rich message can be sent again")
 
         return raw.types.InputRichMessage(
-            blocks=self._raw.blocks,
+            blocks=_to_input(self._raw.blocks),
             rtl=self._raw.rtl,
             photos=[
                 raw.types.InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference)
                 for p in self._raw.photos
+                if isinstance(p, raw.types.Photo)
             ] or None,
             documents=[
                 raw.types.InputDocument(id=d.id, access_hash=d.access_hash, file_reference=d.file_reference)
                 for d in self._raw.documents
+                if isinstance(d, raw.types.Document)
             ] or None,
             users=self._users or None,
         )
+
+
+_DETECTED_TEXT_TYPES = frozenset({
+    "TextMention",
+    "TextHashtag",
+    "TextBotCommand",
+    "TextCashtag",
+    "TextAutoUrl",
+    "TextAutoEmail",
+    "TextAutoPhone",
+    "TextBankCard",
+    "TextTonAddress",
+})
+
+_RECEIVE_ONLY_BLOCK_TYPES = frozenset({
+    "PageBlockUnsupported",
+    "PageBlockEmbed",
+    "PageBlockEmbedPost",
+    "PageBlockChannel",
+})
+
+
+def _to_input(obj):
+    if isinstance(obj, list):
+        return [_to_input(item) for item in obj]
+
+    if not isinstance(obj, raw.core.TLObject):
+        return obj
+
+    name = type(obj).__name__
+
+    if name in _DETECTED_TEXT_TYPES:
+        return _to_input(obj.text)
+
+    if name in _RECEIVE_ONLY_BLOCK_TYPES:
+        return raw.types.PageBlockDivider()
+
+    if isinstance(obj, raw.types.PageBlockMap):
+        return raw.types.InputPageBlockMap(
+            geo=raw.types.InputGeoPoint(
+                lat=obj.geo.lat, long=obj.geo.long, accuracy_radius=obj.geo.accuracy_radius
+            ) if isinstance(obj.geo, raw.types.GeoPoint) else raw.types.InputGeoPointEmpty(),
+            zoom=obj.zoom,
+            w=obj.w,
+            h=obj.h,
+            caption=_to_input(obj.caption),
+        )
+
+    return type(obj)(**{slot: _to_input(getattr(obj, slot)) for slot in obj.__slots__})
+
+
+def _collect_anchors(obj, anchors: Dict[str, bool]) -> bool:
+    has_anchor_links = False
+
+    if isinstance(obj, raw.types.TextAnchor):
+        anchors[obj.name] = not (
+            isinstance(obj.text, raw.types.TextEmpty)
+            or isinstance(obj.text, raw.types.TextPlain) and not obj.text.text
+        )
+    elif isinstance(obj, raw.types.TextUrl) and obj.url.startswith("#"):
+        has_anchor_links = True
+
+    if isinstance(obj, list):
+        values = obj
+    elif isinstance(obj, raw.core.TLObject):
+        values = (getattr(obj, name) for name in obj.__slots__)
+    else:
+        return has_anchor_links
+
+    for value in values:
+        has_anchor_links = _collect_anchors(value, anchors) or has_anchor_links
+
+    return has_anchor_links
+
+
+def _resolve_anchor_links(obj, anchors: Dict[str, bool]):
+    if isinstance(obj, list):
+        for index, item in enumerate(obj):
+            obj[index] = _resolve_anchor_links(item, anchors)
+
+        return obj
+
+    if not isinstance(obj, Object):
+        return obj
+
+    for key, value in list(vars(obj).items()):
+        if not key.startswith("_"):
+            setattr(obj, key, _resolve_anchor_links(value, anchors))
+
+    if isinstance(obj, types.RichTextAnchorLink):
+        for name in dict.fromkeys((obj.anchor_name, unquote(obj.anchor_name))):
+            if name not in anchors:
+                continue
+
+            if anchors[name]:
+                return types.RichTextReferenceLink(text=obj.text, reference_name=name)
+
+            obj.anchor_name = name
+            return obj
+
+        return types.RichTextUrl(text=obj.text, url=f"#{obj.anchor_name}")
+
+    return obj
 
 
 def _mentioned_user_ids(obj, found=None) -> set:

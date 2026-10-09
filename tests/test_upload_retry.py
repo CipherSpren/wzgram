@@ -42,10 +42,11 @@ async def upload(tmp_path, monkeypatch, fail, size=4 * CHUNK):
 
         async def send(query, wait_response=True, timeout=None, retry=0, real=real):
             attempts.append(query)
-            error = fail(len(attempts))
-            if error is not None:
-                raise error
-            return await real(query, wait_response, timeout, retry)
+            outcome = fail(len(attempts))
+            if isinstance(outcome, BaseException):
+                raise outcome
+            result = await real(query, wait_response, timeout, retry)
+            return result if outcome is None else outcome
 
         session.send = send
 
@@ -54,18 +55,30 @@ async def upload(tmp_path, monkeypatch, fail, size=4 * CHUNK):
 
 
 async def test_a_part_the_server_refuses_fails_the_upload_at_once(tmp_path, monkeypatch):
-    attempts = []
+    sends = []
 
     def fail(n):
-        attempts.append(n)
+        sends.append(n)
         return FilePartTooBig(rpc_name="upload.SaveFilePart")
 
     with pytest.raises(FilePartTooBig):
         await upload(tmp_path, monkeypatch, fail)
 
-    assert len(attempts) <= 8, (
-        f"{len(attempts)} sends of parts the server refuses outright; only a "
+    assert len(sends) <= 8, (
+        f"{len(sends)} sends of parts the server refuses outright; only a "
         "flood wait, a 5xx or a lost connection can succeed on a retry"
+    )
+
+
+async def test_a_part_the_server_did_not_accept_is_sent_again(tmp_path, monkeypatch):
+    result, attempts, _ = await upload(
+        tmp_path, monkeypatch, lambda n: False if n == 1 else None,
+    )
+
+    assert result is not None
+    assert len(attempts) == 9, (
+        f"{len(attempts)} sends for 8 parts; the part answered with False was "
+        "never sent again"
     )
 
 

@@ -333,12 +333,24 @@ class _HttpConnection:
                     last_error, last_detail = e, "timed out"
                     self._drop_connection()
 
+                except BaseException:
+                    self._drop_connection()
+                    raise
+
         msg = f"{method} {path}: {last_detail}"
         raise WebCarrierError(msg) from last_error
 
     def _drop_connection(self) -> None:
+        writer = self._writer
+
         self._writer = None
         self._reader = None
+
+        if writer is not None:
+            try:
+                writer.close()
+            except OSError as e:
+                log.debug("WEB proxy: dropping the HTTP connection failed: %s", e)
 
     async def _send_and_read(
         self,
@@ -370,7 +382,6 @@ class _HttpConnection:
         # The relay keeps the pool alive, but an intermediary may still ask for
         #  the connection back; the next request then reconnects.
         if head.headers.get("connection", "").lower() == "close":
-            self._writer.close()
             self._drop_connection()
 
         return HttpResponse(status=head.status, headers=head.headers, body=response_body)

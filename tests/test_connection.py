@@ -1417,6 +1417,82 @@ def _connection_reading(raw: bytes) -> _HttpConnection:
     return connection
 
 
+class _RecordingWriter:
+    def __init__(self, close_error: Exception | None = None) -> None:
+        self.closed = False
+        self.close_error = close_error
+
+    def close(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
+        self.closed = True
+
+    def is_closing(self) -> bool:
+        return False
+
+
+def test_drop_connection_closes_the_writer() -> None:
+    connection = _HttpConnection("relay.invalid", port=443, ssl_context=None)
+
+    writer = _RecordingWriter()
+    connection._writer = writer
+    connection._reader = object()
+
+    connection._drop_connection()
+
+    assert connection._writer is None
+    assert connection._reader is None
+    assert writer.closed is True
+
+
+def test_drop_connection_is_a_noop_without_a_writer() -> None:
+    connection = _HttpConnection("relay.invalid", port=443, ssl_context=None)
+
+    connection._drop_connection()
+
+    assert connection._writer is None
+    assert connection._reader is None
+
+
+def test_drop_connection_swallows_an_oserror_on_close() -> None:
+    connection = _HttpConnection("relay.invalid", port=443, ssl_context=None)
+
+    connection._writer = _RecordingWriter(close_error=OSError("close failed"))
+    connection._reader = object()
+
+    connection._drop_connection()
+
+    assert connection._writer is None
+    assert connection._reader is None
+
+
+class _SendingWriter(_RecordingWriter):
+    def write(self, data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+
+async def test_cancelled_request_drops_the_pooled_connection() -> None:
+    connection = _HttpConnection("relay.invalid", port=443, ssl_context=None)
+
+    writer = _SendingWriter()
+    connection._writer = writer
+    connection._reader = asyncio.StreamReader()
+
+    task = asyncio.create_task(connection.request("POST", path="/up"))
+    await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert connection._writer is None
+    assert connection._reader is None
+    assert writer.closed is True
+
+
 async def test_read_body_content_length() -> None:
     connection = _connection_reading(b"downlink batch")
 

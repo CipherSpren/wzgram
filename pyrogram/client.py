@@ -59,10 +59,9 @@ from pyrogram.errors import (
 )
 from pyrogram.handlers.handler import Handler
 from pyrogram.methods import Methods
-from pyrogram.methods.rate_limiter import TokenBucket
+from pyrogram.methods.rate_limiter import AdaptiveBucket, TokenBucket
 from pyrogram.qrlogin import QRLogin
 from pyrogram.session import Auth, Session
-from pyrogram.session.session import media_window
 from pyrogram.storage import SQLiteStorage, Storage
 from pyrogram.types import LinkPreviewOptions, ListenerRegistry, TermsOfService, User
 from pyrogram.utils import ainput
@@ -633,6 +632,7 @@ class Client(Methods):
         self.last_update_time = datetime.now()
         self._last_update_monotonic = time.monotonic()
         self._state_marks = {}
+        self._recovering = set()
 
         self.media_pool_reaper_task = None
         self.media_pool_reaper_event = asyncio.Event()
@@ -720,7 +720,7 @@ class Client(Methods):
                 log.exception("Media session reaper failed")
 
     async def reap_media_sessions(self, idle_timeout: Optional[int] = None) -> int:
-        """Stop pooled media sessions unused for longer than *idle_timeout* seconds."""
+        """Stop pooled and per-DC sessions unused for longer than *idle_timeout* seconds; the main session is never stopped."""
         if idle_timeout is None:
             idle_timeout = self.MEDIA_SESSION_IDLE_TIMEOUT
 
@@ -750,6 +750,30 @@ class Client(Methods):
                     self.media_session_pools[dc_id] = keep
                 else:
                     self.media_session_pools.pop(dc_id, None)
+
+        for sessions, is_media in ((self.media_sessions, True), (self.sessions, False)):
+            for dc_id, session in list(sessions.items()):
+                if session is self.session:
+                    continue
+
+                lock = self._session_locks.setdefault((dc_id, is_media), asyncio.Lock())
+
+                async with lock:
+                    if (
+                        sessions.get(dc_id) is not session
+                        or session.results
+                        or now - session.last_used < idle_timeout
+                    ):
+                        continue
+
+                    sessions.pop(dc_id, None)
+
+                    try:
+                        await session.stop()
+                    except Exception:
+                        log.exception("Error stopping idle media session")
+
+                    reaped += 1
 
         if reaped:
             log.info("Reaped %s idle media session(s)", reaped)
@@ -1141,6 +1165,7 @@ class Client(Methods):
             # one write per peer per batch rather than per update: each costs a
             # thread hand-off into aiosqlite, and only the highest pts matters
             pending_states = {}
+            too_long = {}
 
             for update in updates.updates:
                 channel_id = getattr(
@@ -1155,7 +1180,9 @@ class Client(Methods):
                 pts_count = getattr(update, "pts_count", None)
                 qts = getattr(update, "qts", None)
 
-                if pts:
+                if isinstance(update, raw.types.UpdateChannelTooLong):
+                    too_long[utils.get_channel_id(channel_id)] = pts
+                elif pts:
                     key = utils.get_channel_id(channel_id) if channel_id else 0
                     known = pending_states.get(key, (key, None, None, updates.date, updates.seq))
 
@@ -1167,9 +1194,6 @@ class Client(Methods):
 
                     if known[2] is None or qts > known[2]:
                         pending_states[0] = known[:2] + (qts,) + known[3:]
-
-                if isinstance(update, raw.types.UpdateChannelTooLong):
-                    log.info(update)
 
                 if isinstance(update, raw.types.UpdateNewChannelMessage) and is_min:
                     message = update.message
@@ -1194,6 +1218,8 @@ class Client(Methods):
                             pass
                         else:
                             if not isinstance(diff, raw.types.updates.ChannelDifferenceEmpty):
+                                await self.fetch_peers(diff.users)
+                                await self.fetch_peers(diff.chats)
                                 users.update({u.id: u for u in diff.users})
                                 chats.update({c.id: c for c in diff.chats})
 
@@ -1201,6 +1227,9 @@ class Client(Methods):
 
             for state in pending_states.values():
                 await self._save_update_state(state)
+
+            for key, pts in too_long.items():
+                self._recover_too_long(key, pts)
         elif isinstance(updates, (raw.types.UpdateShortMessage, raw.types.UpdateShortChatMessage)):
             await self._save_update_state(
                 (
@@ -1241,7 +1270,33 @@ class Client(Methods):
             if qts:
                 await self._save_update_state((0, None, qts, updates.date, None))
         elif isinstance(updates, raw.types.UpdatesTooLong):
-            log.info(updates)
+            self._recover_too_long(0, None)
+
+    def _recover_too_long(self, key, pts):
+        if key in self._recovering:
+            return
+
+        known_pts = self._state_marks.get(key, (None, None))[0]
+
+        if pts is not None and known_pts is not None and known_pts >= pts:
+            return
+
+        self._recovering.add(key)
+        utils.run_in_background(self._recover_too_long_state(key, pts), self.loop)
+
+    async def _recover_too_long_state(self, key, pts):
+        try:
+            if key in self._state_marks:
+                await self.recover_gaps(key)
+            elif key == 0:
+                state = await self.invoke(raw.functions.updates.GetState())
+                await self._save_update_state((0, state.pts, state.qts, state.date, state.seq))
+            elif pts is not None:
+                await self._save_update_state((key, pts, None, None, None))
+        except Exception:
+            log.exception("Recovery after too long update failed for %s", key)
+        finally:
+            self._recovering.discard(key)
 
     async def load_session(self):
         self._state_marks = {}
@@ -1523,14 +1578,24 @@ class Client(Methods):
             chunk_size = 1024 * 1024
             offset_bytes = abs(offset) * chunk_size
             _last_progress_time = 0.0
+            _last_reported = -1
 
             async def _report(sent: int) -> None:
+                nonlocal _last_reported
+
                 if not progress:
                     return
 
+                sent = min(sent, file_size) if file_size else sent
+
+                if sent == _last_reported:
+                    return
+
+                _last_reported = sent
+
                 func = functools.partial(
                     progress,
-                    min(sent, file_size) if file_size else sent,
+                    sent,
                     file_size,
                     *progress_args
                 )
@@ -1555,8 +1620,8 @@ class Client(Methods):
                 if _is_bot:
                     dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_BOT", 5))
                     dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_BOT", 3))
-                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_BOT", 100))
-                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_BOT", 25))
+                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_BOT", 16))
+                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_BOT", 8))
                 elif _is_premium:
                     dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_PREMIUM", 6))
                     dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_PREMIUM", 4))
@@ -1565,8 +1630,8 @@ class Client(Methods):
                 else:
                     dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_USER", 5))
                     dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_USER", 3))
-                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_USER", 100))
-                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_USER", 25))
+                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_USER", 8))
+                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_USER", 8))
 
                 total_chunks = math.ceil((file_size - offset_bytes) / chunk_size)
                 pool_size = min(dl_pool_size, total_chunks)
@@ -1587,14 +1652,12 @@ class Client(Methods):
                 tasks = []
                 _done_count = 0
                 _total_chunks = 0
-                _getfile_rate = TokenBucket(rate=dl_rate, burst=dl_burst)
-                _last_rate_adj = 0.0
-                _fast_window = 0
+                _getfile_rate = AdaptiveBucket(
+                    rate=dl_rate, ceiling=max(dl_rate, 150), burst=dl_burst
+                )
 
-                async def _worker(pool, i):
-                    nonlocal _done_count, _last_rate_adj, _fast_window
-                    window = media_window(pool[0].auth_key, dc_id)
-
+                async def _worker(session):
+                    nonlocal _done_count
                     while True:
                         await buffer_slots.acquire()
 
@@ -1604,27 +1667,43 @@ class Client(Methods):
                             buffer_slots.release()
                             return
 
-                        session = window.pick(pool, i)
-
                         try:
-                            await _getfile_rate.acquire()
-                            t0 = time.monotonic()
-                            r = await session.invoke(
-                                raw.functions.upload.GetFile(
-                                    location=location,
-                                    offset=offset,
-                                    limit=chunk_size,
-                                ),
-                                timeout=Session.MEDIA_WAIT_TIMEOUT,
-                                sleep_threshold=30,
-                            )
+                            slept = 0.0
+
+                            while True:
+                                await _getfile_rate.acquire()
+
+                                try:
+                                    r = await session.invoke(
+                                        raw.functions.upload.GetFile(
+                                            location=location,
+                                            offset=offset,
+                                            limit=chunk_size,
+                                        ),
+                                        timeout=Session.MEDIA_WAIT_TIMEOUT,
+                                        sleep_threshold=0,
+                                    )
+                                    break
+                                except (FloodWait, FloodPremiumWait) as e:
+                                    amount = e.value
+
+                                    if amount > 30 or slept + amount > 30 * Session.MAX_RETRIES:
+                                        raise
+
+                                    slept += amount
+                                    _getfile_rate.on_flood()
+                                    log.warning(
+                                        '[%s] Waiting for %s seconds before continuing (required by "upload.GetFile")',
+                                        self.name, amount,
+                                    )
+                                    await asyncio.sleep(amount)
                         except BaseException:
                             buffer_slots.release()
                             raise
 
+                        _getfile_rate.on_success()
                         chunk_data = r.bytes
                         r = None
-                        t1 = time.monotonic()
 
                         if _write_mode:
                             write_at(_write_fd, chunk_data, offset)
@@ -1640,21 +1719,6 @@ class Client(Methods):
 
                         if chunk_len < chunk_size:
                             return
-
-                        elapsed = t1 - t0
-                        now = t1
-                        if elapsed > 2.0 and now - _last_rate_adj > 0.5:
-                            _last_rate_adj = now
-                            _fast_window = 0
-                            _getfile_rate.rate = max(_getfile_rate.rate * 0.8, 3.0)
-                        elif elapsed < 0.5:
-                            _fast_window += 1
-                            if _fast_window >= 5 and now - _last_rate_adj > 0.5:
-                                _last_rate_adj = now
-                                _getfile_rate.rate = min(_getfile_rate.rate + 2.0, dl_rate)
-                                _fast_window = 0
-                        else:
-                            _fast_window = 0
 
                 async def _launch(start):
                     nonlocal _total_chunks
@@ -1678,7 +1742,7 @@ class Client(Methods):
                         work.put_nowait(start + i * chunk_size)
 
                     started = [
-                        asyncio.ensure_future(_worker(pool, i))
+                        asyncio.ensure_future(_worker(pool[i % n_sessions]))
                         for i in range(
                             min(dl_pool_size * dl_workers_per_session, chunks_needed)
                         )
@@ -2057,6 +2121,7 @@ class Client(Methods):
         sessions = self.media_sessions if is_media else self.sessions
 
         if not temporary and sessions.get(dc_id):
+            sessions[dc_id].last_used = time.monotonic()
             return sessions[dc_id]
 
         # Concurrent exports for one DC invalidate each other: AUTH_BYTES_INVALID.
@@ -2064,6 +2129,7 @@ class Client(Methods):
 
         async with lock:
             if not temporary and sessions.get(dc_id):
+                sessions[dc_id].last_used = time.monotonic()
                 return sessions[dc_id]
 
             if not server_address or not port:
@@ -2183,40 +2249,48 @@ class Client(Methods):
     async def _get_media_session_pool(self, dc_id: int, n: int) -> list:
         lock = self._media_sessions_locks.setdefault(dc_id, asyncio.Lock())
         async with lock:
-            media = await self.get_session(dc_id, is_media=True)
-            window = media_window(media.auth_key, dc_id)
-            window.fixed = bool(getattr(self.me, "is_premium", False))
-            n = window.connections(n)
-            extras = []
+            pool = []
 
             for session in self.media_session_pools.get(dc_id, []):
-                if not (session.is_started.is_set() or session.is_restarting):
+                if session.is_started.is_set() or session.is_restarting:
+                    session.last_used = time.monotonic()
+                    pool.append(session)
+                else:
                     # dropping it here puts it out of the reaper's reach, and its
                     # socket, ping task and receive task outlive the client
                     utils.run_in_background(session.stop(), self.loop)
-                elif len(extras) >= window.size - 1 and not session.results:
-                    utils.run_in_background(session.stop(), self.loop)
-                else:
-                    extras.append(session)
 
-            needed = n - 1 - len(extras)
+            needed = n - len(pool)
+            if needed > 0:
+                media = await self.get_session(dc_id, is_media=True)
 
-            while needed > 0:
-                chunk = min(needed, 3)
-                async with self._session_creation_gate:
-                    extras.extend(await asyncio.gather(*(
-                        self._make_media_session(
-                            dc_id, media.auth_key, media.server_address, media.port
+                while needed > 0:
+                    chunk = min(needed, 3)
+                    async with self._session_creation_gate:
+                        results = await asyncio.gather(*(
+                            self._make_media_session(
+                                dc_id, media.auth_key, media.server_address, media.port
+                            )
+                            for _ in range(chunk)
+                        ), return_exceptions=True)
+
+                    failed = [r for r in results if isinstance(r, BaseException)]
+                    pool.extend(r for r in results if not isinstance(r, BaseException))
+
+                    if failed:
+                        if not pool:
+                            raise failed[0]
+
+                        log.warning(
+                            "Media pool for DC %s is short by %d session(s): %s",
+                            dc_id, needed - (chunk - len(failed)),
+                            str(failed[0]) or type(failed[0]).__name__,
                         )
-                        for _ in range(chunk)
-                    )))
-                needed -= chunk
+                        break
 
-            for session in extras:
-                session.last_used = time.monotonic()
-
-            self.media_session_pools[dc_id] = extras
-            return [media] + extras[:n - 1]
+                    needed -= chunk
+            self.media_session_pools[dc_id] = pool
+            return list(pool)
 
     async def get_dc_option(
         self,

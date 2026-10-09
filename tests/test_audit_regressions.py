@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 import pyrogram
-from pyrogram.session.session import media_window
 from pyrogram import enums, raw, types, utils
 from pyrogram.dispatcher import Dispatcher
 from pyrogram.errors import UserNotParticipant
@@ -1680,6 +1679,9 @@ async def test_a_finished_download_says_it_finished(tmp_path):
             f"{label}: no call may claim more than the file holds"
         )
         assert seen == sorted(seen), f"{label}: progress must not go backwards"
+        assert len(seen) == len(set(seen)), (
+            f"{label}: the same value was reported more than once: {seen}"
+        )
 
 
 async def test_a_download_progress_callback_may_be_a_plain_function(tmp_path):
@@ -1755,6 +1757,47 @@ async def test_a_finished_upload_says_it_finished(tmp_path):
         "no call may claim more bytes than were sent"
     )
     assert seen == sorted(seen), "progress must not go backwards"
+    assert len(seen) == len(set(seen)), (
+        f"the same value was reported more than once: {seen}"
+    )
+
+
+async def test_stop_transmission_from_the_callback_still_stops_both_ways(tmp_path):
+    import pyrogram
+    from types import SimpleNamespace as NS
+
+    from tests.e2e import CHUNK, FakeDC, make_client
+    from tests.test_transfers import file_id
+
+    calls = []
+
+    async def stop_on_second(current, total):
+        calls.append(current)
+        if len(calls) == 2:
+            raise pyrogram.StopTransmission
+
+    client = _progress_client([b"a" * CHUNK, b"b" * CHUNK, b"c" * CHUNK])
+    result = await client.handle_download(
+        (file_id(), str(tmp_path), "out.bin", False, 3 * CHUNK, stop_on_second, ())
+    )
+
+    assert result is None and not (tmp_path / "out.bin.temp").exists()
+    assert len(calls) == 2, f"download kept reporting after the stop: {calls}"
+
+    calls.clear()
+    size = 8 * CHUNK
+    path = tmp_path / "up.bin"
+    path.write_bytes(b"\x01" * size)
+
+    dc = FakeDC(size, step=0.00002)
+    client = make_client(dc, "upstop", pool=dc.pool(4))
+    client.me = NS(is_bot=False, is_premium=False)
+    await client.storage.open()
+
+    with pytest.raises(pyrogram.StopTransmission):
+        await client.save_file(str(path), progress=stop_on_second)
+
+    assert len(calls) == 2, f"upload kept reporting after the stop: {calls}"
 OWN_ID = 7933658472
 
 
@@ -3765,26 +3808,22 @@ async def test_a_media_session_handed_out_is_not_reaped_before_its_first_request
             self.stopped = True
 
     class _Client:
-        me = None
         _get_media_session_pool = pyrogram.Client._get_media_session_pool
         reap_media_sessions = pyrogram.Client.reap_media_sessions
         MEDIA_SESSION_IDLE_TIMEOUT = 300
 
         def __init__(self):
-            self.media = _MediaSession()
-            self.media.auth_key = b"media-key"
             self.media_session_pools = {2: [_MediaSession()]}
             self._media_sessions_locks = {}
-
-        async def get_session(self, dc_id, is_media=False):
-            return self.media
+            self.media_sessions = {}
+            self.sessions = {}
+            self._session_locks = {}
+            self.session = None
 
     client = _Client()
     session = client.media_session_pools[2][0]
-    # the main media session is the first connection; the pooled one is the second
-    media_window(client.media.auth_key, 2).size = 2
 
-    assert await client._get_media_session_pool(2, 2) == [client.media, session]
+    assert await client._get_media_session_pool(2, 1) == [session]
     assert await client.reap_media_sessions() == 0
     assert not session.stopped
 _EPHEMERAL_SHORTCUTS = ["reply", "answer", "reply_rich", "answer_rich"] + [
@@ -4530,6 +4569,29 @@ def test_excluding_a_plugin_handler_removes_it(tmp_path, monkeypatch):
     assert removed == added
 
 
+def test_loading_plugins_again_does_not_register_handlers_twice(tmp_path, monkeypatch):
+    client = _plugin_client(tmp_path, monkeypatch, "reloaded", {})
+
+    client.load_plugins()
+    client.load_plugins()
+
+    assert [h.callback.__name__ for h in client.dispatcher.groups[0]] == ["ping"], (
+        "a restart that keeps handlers must not make plugin handlers run twice"
+    )
+
+
+async def test_adding_a_handler_twice_under_a_running_loop_keeps_one():
+    client = _DispatcherClient()
+    dispatcher = Dispatcher(client)
+    handler = MessageHandler(lambda c, m: None)
+
+    dispatcher.add_handler(handler, 0)
+    dispatcher.add_handler(handler, 0)
+    await asyncio.sleep(0.05)
+
+    assert dispatcher.groups[0] == [handler]
+
+
 @pytest.mark.parametrize("name", [n for n in _EPHEMERAL_SHORTCUTS if n.startswith("reply")])
 @pytest.mark.parametrize("is_bot, deadline", [(True, 1700000013), (False, None)])
 async def test_a_bot_reply_to_an_ephemeral_message_carries_the_quote_deadline(name, is_bot, deadline):
@@ -4663,6 +4725,40 @@ async def test_an_ephemeral_reply_to_an_ephemeral_message_finds_it_when_it_is_kn
 
     assert reply.reply_to_message is sent
     assert reply.reply_to_message_id is None
+    client.get_messages.assert_not_awaited()
+
+
+async def test_a_reply_chain_does_not_keep_every_message_alive():
+    import gc
+    import weakref
+    from pyrogram import raw, types
+
+    client = _ephemeral_client()
+    users, chats = _ephemeral_parties()
+    refs = []
+
+    for i in range(1, 41):
+        message = await types.Message._parse(client, raw.types.Message(
+            id=i, peer_id=raw.types.PeerChannel(channel_id=100), from_id=raw.types.PeerUser(user_id=5),
+            date=0, message="x", entities=[], restriction_reason=[],
+            reply_to=raw.types.MessageReplyHeader(reply_to_msg_id=i - 1) if i > 1 else None,
+        ), users, chats)
+        chat_id = message.chat.id
+        refs.append(weakref.ref(message))
+        del message
+
+    gc.collect()
+    newest = client.message_cache[(chat_id, 40)]
+
+    assert newest.reply_to_message.id == 39
+    assert newest.reply_to_message.reply_to_message is None
+    assert newest.reply_to_message._client is client
+    assert client.message_cache[(chat_id, 39)].reply_to_message.id == 38, (
+        "cutting the chain on the link must not touch the cached message itself"
+    )
+    assert sum(r() is not None for r in refs) == client.message_cache.capacity, (
+        "evicted messages must be collectable, not pinned by the reply chain"
+    )
     client.get_messages.assert_not_awaited()
 
 
@@ -4845,6 +4941,144 @@ async def test_story_privacy_survives_a_disallow_rule_after_the_public_rule():
 
     assert parsed.privacy is enums.StoriesPrivacyRules.PUBLIC
     assert [u.id for u in parsed.disallowed_users] == [7]
+
+
+async def test_story_privacy_maps_an_allow_list_to_selected_users():
+    client = SimpleNamespace(me=None, fetch_stories=False)
+    users = {7: raw.types.User(
+        id=7, first_name="U", usernames=[], restriction_reason=[], access_hash=1
+    )}
+    story = raw.types.StoryItem(
+        id=1,
+        date=0,
+        expire_date=0,
+        media=raw.types.MessageMediaUnsupported(),
+        entities=[],
+        media_areas=[],
+        privacy=[raw.types.PrivacyValueAllowUsers(users=[7])],
+    )
+
+    parsed = await types.Story._parse(client, story, raw.types.PeerUser(user_id=7), users, {})
+
+    assert parsed.privacy is enums.StoriesPrivacyRules.SELECTED_USERS
+    assert [u.id for u in parsed.allowed_users] == [7]
+
+
+async def test_story_privacy_keeps_close_friends_with_extra_users():
+    client = SimpleNamespace(me=None, fetch_stories=False)
+    users = {7: raw.types.User(
+        id=7, first_name="U", usernames=[], restriction_reason=[], access_hash=1
+    )}
+    story = raw.types.StoryItem(
+        id=1,
+        date=0,
+        expire_date=0,
+        media=raw.types.MessageMediaUnsupported(),
+        entities=[],
+        media_areas=[],
+        privacy=[
+            raw.types.PrivacyValueAllowCloseFriends(),
+            raw.types.PrivacyValueAllowUsers(users=[7]),
+            raw.types.PrivacyValueDisallowAll(),
+        ],
+    )
+
+    parsed = await types.Story._parse(client, story, raw.types.PeerUser(user_id=7), users, {})
+
+    assert parsed.privacy is enums.StoriesPrivacyRules.CLOSE_FRIENDS
+    assert [u.id for u in parsed.allowed_users] == [7]
+
+
+async def test_story_privacy_reports_disallow_all_as_selected_users():
+    client = SimpleNamespace(me=None, fetch_stories=False)
+    story = raw.types.StoryItem(
+        id=1,
+        date=0,
+        expire_date=0,
+        media=raw.types.MessageMediaUnsupported(),
+        entities=[],
+        media_areas=[],
+        privacy=[raw.types.PrivacyValueDisallowAll()],
+    )
+
+    parsed = await types.Story._parse(client, story, raw.types.PeerUser(user_id=7), {7: raw.types.User(id=7, first_name="U", usernames=[], restriction_reason=[], access_hash=1)}, {})
+
+    assert parsed.privacy is enums.StoriesPrivacyRules.SELECTED_USERS
+    assert parsed.allowed_users is None
+
+
+async def test_story_privacy_reads_the_story_flags():
+    client = SimpleNamespace(me=None, fetch_stories=False)
+    story = raw.types.StoryItem(
+        id=1,
+        date=0,
+        expire_date=0,
+        media=raw.types.MessageMediaUnsupported(),
+        entities=[],
+        media_areas=[],
+        privacy=[],
+        contacts=True,
+    )
+
+    parsed = await types.Story._parse(client, story, raw.types.PeerUser(user_id=7), {7: raw.types.User(id=7, first_name="U", usernames=[], restriction_reason=[], access_hash=1)}, {})
+
+    assert parsed.privacy is enums.StoriesPrivacyRules.CONTACTS
+
+
+async def test_story_privacy_keeps_allowed_users_and_chats():
+    client = SimpleNamespace(me=None, fetch_stories=False)
+    users = {7: raw.types.User(
+        id=7, first_name="U", usernames=[], restriction_reason=[], access_hash=1
+    )}
+    chats = {9: raw.types.Chat(
+        id=9, title="G", photo=raw.types.ChatPhotoEmpty(), participants_count=1, date=0, version=1
+    )}
+    story = raw.types.StoryItem(
+        id=1,
+        date=0,
+        expire_date=0,
+        media=raw.types.MessageMediaUnsupported(),
+        entities=[],
+        media_areas=[],
+        privacy=[
+            raw.types.PrivacyValueAllowUsers(users=[7, 8]),
+            raw.types.PrivacyValueAllowChatParticipants(chats=[9]),
+            raw.types.PrivacyValueDisallowAll(),
+        ],
+    )
+
+    parsed = await types.Story._parse(client, story, raw.types.PeerUser(user_id=7), users, chats)
+
+    assert parsed.privacy is enums.StoriesPrivacyRules.SELECTED_USERS
+    assert [u.id for u in parsed.allowed_users] == [7, -9]
+
+
+async def test_parse_full_user_populates_bot_admin_rights():
+    from pyrogram.types.user_and_chats.user import User
+
+    full_user = raw.types.UserFull(
+        id=1,
+        settings=raw.types.PeerSettings(),
+        notify_settings=raw.types.PeerNotifySettings(),
+        common_chats_count=0,
+        bot_group_admin_rights=raw.types.ChatAdminRights(change_info=True, ban_users=True),
+        bot_broadcast_admin_rights=raw.types.ChatAdminRights(post_messages=True),
+    )
+    users = {1: raw.types.User(
+        id=1, first_name="B", usernames=[], restriction_reason=[], access_hash=1
+    )}
+
+    class _Client:
+        me = None
+
+        async def get_messages(self, *args, **kwargs):
+            return None
+
+    parsed = await User._parse_full(_Client(), full_user, users, {})
+
+    assert parsed.chat_admin_rights.can_change_info is True
+    assert parsed.chat_admin_rights.can_restrict_members is True
+    assert parsed.channel_admin_rights.can_post_messages is True
 
 
 def _message(chat_id, user_id, outgoing):
@@ -5141,6 +5375,35 @@ async def test_a_link_preview_url_is_sent_and_edited_as_a_web_page():
     client.sent.clear()
     await client.send_message("me", "hi")
     assert isinstance(client.sent[0], raw.functions.messages.SendMessage)
+
+
+async def test_edit_story_media_without_media_does_not_crash():
+    from pyrogram.methods.stories.edit_story_media import EditStoryMedia
+
+    class _StoryClient(EditStoryMedia):
+        parse_mode = enums.ParseMode.MARKDOWN
+
+        def __init__(self):
+            self.sent = []
+            self.parser = Parser(self)
+
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerSelf()
+
+        async def save_file(self, path, *args, **kwargs):
+            return raw.types.InputFile(id=1, parts=1, name="x", md5_checksum="") if path else None
+
+        async def invoke(self, query, *args, **kwargs):
+            self.sent.append(query)
+            return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+
+    client = _StoryClient()
+
+    result = await client.edit_story_media("me", 5, media=None)
+
+    assert result is None
+    assert isinstance(client.sent[0], raw.functions.stories.EditStory)
+    assert client.sent[0].media is None
 
 
 async def test_a_venue_with_a_foursquare_id_names_its_provider():
@@ -5945,3 +6208,549 @@ async def test_a_received_rich_message_can_be_copied(partial):
     assert sent[0].blocks == (full_blocks if partial else blocks)
     assert sent[0].photos == [raw.types.InputPhoto(id=5, access_hash=6, file_reference=b"r")]
     assert sent[0].users == [raw.types.InputUser(user_id=111, access_hash=9)]
+
+
+def _mention(uid):
+    return raw.types.TextMentionName(text=raw.types.TextPlain(text="you"), user_id=uid)
+
+
+def test_a_mention_inside_a_list_item_is_collected():
+    from pyrogram.types.input_content.input_rich_block import (
+        InputRichBlockList,
+        InputRichBlockListItem,
+        _collect_mentioned_user_ids,
+    )
+
+    blocks = [InputRichBlockList(items=[InputRichBlockListItem(text=_mention(111))])]
+
+    assert _collect_mentioned_user_ids(blocks) == [111]
+
+
+def test_a_mention_inside_a_table_cell_is_collected():
+    from pyrogram.types.input_content.input_rich_block import (
+        InputRichBlockTable,
+        InputRichBlockTableCell,
+        _collect_mentioned_user_ids,
+    )
+
+    blocks = [InputRichBlockTable(title="t", rows=[[InputRichBlockTableCell(text=_mention(222))]])]
+
+    assert _collect_mentioned_user_ids(blocks) == [222]
+
+
+def test_mentions_are_deduplicated_across_blocks():
+    from pyrogram.types.input_content.input_rich_block import (
+        InputRichBlockList,
+        InputRichBlockListItem,
+        InputRichBlockParagraph,
+        _collect_mentioned_user_ids,
+    )
+
+    blocks = [
+        InputRichBlockParagraph(text=_mention(333)),
+        InputRichBlockList(items=[
+            InputRichBlockListItem(text=_mention(444)),
+            InputRichBlockListItem(text=_mention(333)),
+        ]),
+    ]
+
+    assert _collect_mentioned_user_ids(blocks) == [333, 444]
+
+
+def test_a_mention_inside_received_rich_text_is_collected():
+    from pyrogram.types.input_content.input_rich_block import (
+        InputRichBlockParagraph,
+        _collect_mentioned_user_ids,
+    )
+
+    text = raw.types.TextConcat(texts=raw.core.List([raw.types.TextPlain(text="hi "), _mention(555)]))
+
+    assert _collect_mentioned_user_ids([InputRichBlockParagraph(text=text)]) == [555]
+
+
+def test_a_ton_address_entity_is_parsed():
+    entity = types.MessageEntity._parse(None, raw.types.MessageEntityTonAddress(offset=0, length=5), {})
+
+    assert entity.type == enums.MessageEntityType.TON_ADDRESS
+
+
+def test_an_unknown_entity_type_is_parsed_as_unknown(monkeypatch):
+    from pyrogram.types.messages_and_media import message_entity
+
+    class _NewEntity(raw.types.MessageEntityBold):
+        pass
+
+    monkeypatch.setattr(message_entity, "_ENTITY_META", {})
+
+    entity = types.MessageEntity._parse(None, _NewEntity(offset=1, length=2), {})
+
+    assert entity.type == enums.MessageEntityType.UNKNOWN
+
+
+def test_bot_verification_description_is_text_with_entities():
+    verification = raw.types.BotVerification(
+        bot_id=1,
+        icon=2,
+        description=raw.types.TextWithEntities(
+            text="Verified",
+            entities=[raw.types.MessageEntityBold(offset=0, length=8)],
+        ),
+    )
+
+    description = types.BotVerification._parse(None, verification, {}).description
+
+    assert description == "Verified"
+    assert description.html == "<b>Verified</b>"
+
+
+async def test_a_mentioned_user_is_resolved_at_any_depth_of_a_received_rich_message():
+    from pyrogram.raw.core import TLObject
+
+    users = {42: TLObject.read(BytesIO(raw.types.User(id=42, first_name="Bob", access_hash=1).write()))}
+    mention = lambda: raw.types.TextConcat(texts=[
+        raw.types.TextPlain(text="hi "),
+        raw.types.TextBold(text=raw.types.TextMentionName(text=raw.types.TextPlain(text="Bob"), user_id=42)),
+    ])
+
+    blocks = [
+        raw.types.PageBlockParagraph(text=mention()),
+        raw.types.PageBlockList(items=[raw.types.PageListItemText(text=mention())]),
+        raw.types.PageBlockTable(
+            title=mention(),
+            rows=[raw.types.PageTableRow(cells=[raw.types.PageTableCell(text=mention())])],
+        ),
+        raw.types.PageBlockBlockquote(text=mention(), caption=mention()),
+        raw.types.PageBlockButtonRow(buttons=[
+            raw.types.PageButton(text=mention(), type=raw.types.InlineButtonTypeUrl(url="https://a.b")),
+        ]),
+    ]
+
+    found = []
+
+    def walk(obj):
+        if isinstance(obj, types.RichTextTextMention):
+            found.append(obj.user)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+        elif isinstance(obj, types.Object):
+            for value in vars(obj).values():
+                walk(value)
+
+    for block in blocks:
+        walk(await types.RichBlock._parse(None, block, {}, {}, users, {}))
+
+    assert len(found) == 7
+    assert all(user is not None and user.id == 42 for user in found)
+
+
+async def test_a_ton_address_in_rich_text_is_kept():
+    text = raw.types.TextConcat(texts=[
+        raw.types.TextPlain(text="to "),
+        raw.types.TextTonAddress(text=raw.types.TextPlain(text="EQabc")),
+    ])
+
+    parsed = await types.RichText._parse(None, text)
+
+    assert parsed[0] == "to "
+    assert isinstance(parsed[1], types.RichTextTonAddress)
+    assert parsed[1].text == "EQabc"
+    assert parsed[1].address == "EQabc"
+
+
+class _RichUploadClient:
+    def __init__(self):
+        self.sent = []
+
+    def guess_mime_type(self, *args):
+        return "video/mp4"
+
+    async def resolve_peer(self, peer):
+        return raw.types.InputPeerSelf()
+
+    async def save_file(self, *args, **kwargs):
+        return raw.types.InputFile(id=1, parts=1, name="f", md5_checksum="")
+
+    async def invoke(self, query):
+        self.sent.append(query.media)
+
+        if isinstance(query.media, (raw.types.InputMediaUploadedPhoto, raw.types.InputMediaPhotoExternal)):
+            return raw.types.MessageMediaPhoto(
+                photo=raw.types.Photo(id=7, access_hash=8, file_reference=b"", date=0, sizes=[], dc_id=1)
+            )
+
+        return raw.types.MessageMediaDocument(
+            document=raw.types.Document(
+                id=9, access_hash=10, file_reference=b"", date=0, mime_type="x", size=1, dc_id=1, attributes=[]
+            )
+        )
+
+
+@pytest.mark.parametrize("block_type, attribute, uploaded", [
+    ("InputRichBlockPhoto", "photo", raw.types.InputMediaUploadedPhoto),
+    ("InputRichBlockVideo", "video", raw.types.InputMediaUploadedDocument),
+    ("InputRichBlockAnimation", "animation", raw.types.InputMediaUploadedDocument),
+    ("InputRichBlockAudio", "audio", raw.types.InputMediaUploadedDocument),
+    ("InputRichBlockVoiceNote", "voice", raw.types.InputMediaUploadedDocument),
+    ("InputRichBlockDocument", "document", raw.types.InputMediaUploadedDocument),
+])
+async def test_a_rich_media_block_uploads_a_local_path(tmp_path, block_type, attribute, uploaded):
+    from pyrogram.types.input_content import input_rich_block
+
+    path = tmp_path / "file.bin"
+    path.write_bytes(b"x")
+    client = _RichUploadClient()
+    block = getattr(input_rich_block, block_type)(**{attribute: str(path)})
+    photos, documents = [], []
+
+    await block._upload(client, None, photos, documents)
+
+    assert isinstance(client.sent[0], uploaded)
+    assert len(photos) + len(documents) == 1
+
+
+@pytest.mark.parametrize("block_type, attribute, external, collected", [
+    ("InputRichBlockPhoto", "photo", raw.types.InputMediaPhotoExternal, "photos"),
+    ("InputRichBlockDocument", "document", raw.types.InputMediaDocumentExternal, "documents"),
+])
+async def test_a_rich_media_block_sends_an_http_url_as_external_media(block_type, attribute, external, collected):
+    from pyrogram.types.input_content import input_rich_block
+
+    client = _RichUploadClient()
+    block = getattr(input_rich_block, block_type)(**{attribute: "https://example.com/file.jpg"})
+    media = {"photos": [], "documents": []}
+
+    await block._upload(client, None, media["photos"], media["documents"])
+
+    assert isinstance(client.sent[0], external)
+    assert len(media[collected]) == 1
+
+
+class _TooLongClient:
+    handle_updates = pyrogram.Client.handle_updates
+    _save_update_state = pyrogram.Client._save_update_state
+    _recover_too_long = pyrogram.Client._recover_too_long
+    _recover_too_long_state = pyrogram.Client._recover_too_long_state
+
+    def __init__(self, states=(), replies=()):
+        self.states = []
+        self._state_marks = {}
+        self._recovering = set()
+        self.skip_updates = False
+        self.loop = None
+        self.recovered = []
+        self.fetched = []
+        self.sent = []
+        self.replies = list(replies)
+
+        outer = self
+
+        class _Storage:
+            async def update_state(self, value=object):
+                if value is object:
+                    return list(states)
+                outer.states.append(value)
+
+        class _Dispatcher:
+            async def enqueue_update(self, update, users, chats):
+                return True
+
+        self.storage = _Storage()
+        self.dispatcher = _Dispatcher()
+
+    async def fetch_peers(self, peers):
+        self.fetched.extend(peers)
+        return any(getattr(p, "min", False) for p in peers)
+
+    async def resolve_peer(self, peer_id):
+        return raw.types.InputChannel(channel_id=1, access_hash=0)
+
+    async def invoke(self, query, **kwargs):
+        self.sent.append(query)
+        return self.replies.pop(0)
+
+    async def recover_gaps(self, ids=None):
+        self.recovered.append(ids)
+        return (0, 0)
+
+
+async def _settle():
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+def _too_long_batch(*updates):
+    return raw.types.Updates(updates=list(updates), users=[], chats=[], date=1700000000, seq=4)
+
+
+async def test_a_channel_too_long_update_recovers_from_the_state_seen_in_this_run():
+    client = _TooLongClient()
+    client._state_marks[-1000000000005] = (10, None)
+
+    await client.handle_updates(_too_long_batch(raw.types.UpdateChannelTooLong(channel_id=5, pts=30)))
+    await _settle()
+
+    assert client.recovered == [-1000000000005]
+    assert client.states == []
+    assert client._recovering == set()
+
+
+async def test_a_channel_too_long_update_for_a_channel_not_seen_in_this_run_only_records_its_pts():
+    client = _TooLongClient(states=[(-1000000000005, 10, None, None, None)])
+
+    await client.handle_updates(_too_long_batch(raw.types.UpdateChannelTooLong(channel_id=5, pts=30)))
+    await _settle()
+
+    assert client.recovered == []
+    assert client.states == [(-1000000000005, 30, None, None, None)]
+    assert client._state_marks[-1000000000005] == (30, None)
+
+
+async def test_a_channel_too_long_update_behind_the_known_pts_is_ignored():
+    client = _TooLongClient()
+    client._state_marks[-1000000000005] = (30, None)
+
+    await client.handle_updates(_too_long_batch(raw.types.UpdateChannelTooLong(channel_id=5, pts=30)))
+    await _settle()
+
+    assert client.recovered == []
+
+
+async def test_updates_too_long_recovers_the_common_state_seen_in_this_run():
+    client = _TooLongClient()
+    client._state_marks[0] = (10, 50)
+
+    await client.handle_updates(raw.types.UpdatesTooLong())
+    await _settle()
+
+    assert client.recovered == [0]
+
+
+async def test_updates_too_long_before_any_update_records_the_server_state():
+    client = _TooLongClient(replies=[_state(40, 50)])
+
+    await client.handle_updates(raw.types.UpdatesTooLong())
+    await _settle()
+
+    assert client.recovered == []
+    assert isinstance(client.sent[0], raw.functions.updates.GetState)
+    assert client.states == [(0, 40, 50, 9, 3)]
+
+
+async def test_repeated_too_long_updates_recover_once_at_a_time():
+    client = _TooLongClient()
+    client._state_marks[0] = (10, 50)
+    gate = asyncio.Event()
+
+    async def recover_gaps(ids=None):
+        client.recovered.append(ids)
+        await gate.wait()
+        return (0, 0)
+
+    client.recover_gaps = recover_gaps
+
+    await client.handle_updates(raw.types.UpdatesTooLong())
+    await client.handle_updates(raw.types.UpdatesTooLong())
+    await _settle()
+    gate.set()
+    await _settle()
+
+    assert client.recovered == [0]
+    assert client._recovering == set()
+
+
+async def test_a_failing_too_long_recovery_is_logged_and_releases_the_key(caplog):
+    client = _TooLongClient()
+    client._state_marks[0] = (10, 50)
+
+    async def recover_gaps(ids=None):
+        raise RuntimeError("boom")
+
+    client.recover_gaps = recover_gaps
+
+    with caplog.at_level("ERROR"):
+        await client.handle_updates(raw.types.UpdatesTooLong())
+        await _settle()
+
+    assert "Recovery after too long update failed" in caplog.text
+    assert client._recovering == set()
+
+
+
+async def test_peers_fetched_for_a_min_channel_message_are_stored():
+    full_user = raw.types.User(id=7, access_hash=99, first_name="x")
+    client = _TooLongClient(replies=[
+        raw.types.updates.ChannelDifference(
+            pts=12, new_messages=[], other_updates=[], chats=[], users=[full_user], final=True
+        )
+    ])
+
+    await client.handle_updates(raw.types.Updates(
+        updates=[raw.types.UpdateNewChannelMessage(
+            message=raw.types.Message(
+                id=3, peer_id=raw.types.PeerChannel(channel_id=5), date=0, message="hi",
+                from_id=raw.types.PeerUser(user_id=7)
+            ),
+            pts=12, pts_count=1
+        )],
+        users=[raw.types.User(id=7, min=True, first_name="x")], chats=[], date=1700000000, seq=4,
+    ))
+
+    assert isinstance(client.sent[0], raw.functions.updates.GetChannelDifference)
+    assert full_user in client.fetched
+
+
+async def test_an_inline_rich_message_uploads_its_media_and_mentions():
+    from pyrogram.types.input_content.input_rich_block import InputRichBlockParagraph, InputRichBlockPhoto
+
+    class _Client:
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerUser(user_id=peer_id, access_hash=5)
+
+    photo = raw.types.InputPhoto(id=7, access_hash=8, file_reference=b"")
+    content = types.InputRichMessageContent(types.InputRichMessage(blocks=[
+        InputRichBlockParagraph(text=_mention(42)),
+        InputRichBlockPhoto(photo=photo),
+    ]))
+
+    result = await content.write(_Client(), None)
+
+    assert result.rich_message.users == [raw.types.InputUser(user_id=42, access_hash=5)]
+    assert result.rich_message.photos == [photo]
+    assert result.rich_message.blocks[1].photo_id == 7
+    result.write()
+
+
+def _ordered_item(text, **kwargs):
+    return raw.types.PageListOrderedItemText(text=raw.types.TextPlain(text=text), **kwargs)
+
+
+@pytest.mark.parametrize("block, expected", [
+    (
+        raw.types.PageBlockOrderedList(items=[_ordered_item("one", num="1"), _ordered_item("two", num="2")]),
+        [("1.", 1, "1"), ("2.", 2, "1")],
+    ),
+    (
+        raw.types.PageBlockOrderedList(
+            reversed=True, start=3, type="a",
+            items=[_ordered_item("x", num="c"), _ordered_item("y", num="b"), _ordered_item("z", num="a")],
+        ),
+        [("c.", 3, "a"), ("b.", 2, "a"), ("a.", 1, "a")],
+    ),
+    (
+        raw.types.PageBlockOrderedList(
+            start=5, type="a",
+            items=[_ordered_item("x"), _ordered_item("y", num="7", value=7), _ordered_item("z", type="I")],
+        ),
+        [("e.", 5, "a"), ("7.", 7, "a"), ("VIII.", 8, "I")],
+    ),
+    (
+        raw.types.PageBlockOrderedList(type="x", items=[_ordered_item("x")]),
+        [("1.", 1, "1")],
+    ),
+])
+async def test_an_ordered_list_is_numbered_like_tdlib(block, expected):
+    parsed = await types.RichBlock._parse(None, block)
+
+    assert [(item.label, item.value, item.type) for item in parsed.items] == expected
+
+
+@pytest.mark.parametrize("voice, expected", [(True, "RichBlockVoiceNote"), (False, "RichBlockAudio")])
+async def test_a_voice_note_in_an_audio_block_is_parsed_as_a_voice_note(voice, expected):
+    document = raw.types.Document(
+        id=9, access_hash=1, file_reference=b"", date=0, mime_type="audio/ogg", size=10, dc_id=1,
+        attributes=[raw.types.DocumentAttributeAudio(duration=3, voice=voice)],
+    )
+    block = raw.types.PageBlockAudio(
+        audio_id=9,
+        caption=raw.types.PageCaption(text=raw.types.TextEmpty(), credit=raw.types.TextEmpty()),
+    )
+
+    parsed = await types.RichBlock._parse(None, block, {}, {9: document})
+
+    assert type(parsed).__name__ == expected
+
+
+async def test_a_copied_rich_message_only_sends_input_blocks_and_texts():
+    caption = raw.types.PageCaption(text=raw.types.TextPlain(text="map"), credit=raw.types.TextEmpty())
+    detected = raw.types.TextConcat(texts=[
+        raw.types.TextPlain(text="see "),
+        raw.types.TextAutoUrl(text=raw.types.TextPlain(text="https://t.me")),
+        raw.types.TextBold(text=raw.types.TextMention(text=raw.types.TextPlain(text="@durov"))),
+        raw.types.TextTonAddress(text=raw.types.TextPlain(text="EQabc")),
+    ])
+    received = raw.types.RichMessage(
+        blocks=[
+            raw.types.PageBlockParagraph(text=detected),
+            raw.types.PageBlockMap(
+                geo=raw.types.GeoPoint(long=90.41, lat=23.81, access_hash=1),
+                zoom=13, w=400, h=200, caption=caption,
+            ),
+            raw.types.PageBlockEmbed(caption=caption),
+            raw.types.PageBlockUnsupported(),
+        ],
+        photos=[raw.types.PhotoEmpty(id=1), raw.types.Photo(id=2, access_hash=3, file_reference=b"", date=0, sizes=[], dc_id=1)],
+        documents=[raw.types.DocumentEmpty(id=4)],
+    )
+
+    written = (await types.RichMessage._parse(None, received))._write()
+
+    assert written.blocks[0].text == raw.types.TextConcat(texts=[
+        raw.types.TextPlain(text="see "),
+        raw.types.TextPlain(text="https://t.me"),
+        raw.types.TextBold(text=raw.types.TextPlain(text="@durov")),
+        raw.types.TextPlain(text="EQabc"),
+    ])
+    assert written.blocks[1] == raw.types.InputPageBlockMap(
+        geo=raw.types.InputGeoPoint(lat=23.81, long=90.41), zoom=13, w=400, h=200, caption=caption,
+    )
+    assert written.blocks[2:] == [raw.types.PageBlockDivider(), raw.types.PageBlockDivider()]
+    assert written.photos == [raw.types.InputPhoto(id=2, access_hash=3, file_reference=b"")]
+    assert written.documents is None
+    assert received.blocks[0].text == detected
+    written.write()
+
+
+async def test_a_received_rich_button_can_be_sent_again():
+    text = raw.types.TextConcat(texts=[
+        raw.types.TextPlain(text="at "),
+        raw.types.TextDate(text=raw.types.TextPlain(text="time"), date=1760000000, short_date=True, short_time=True),
+        raw.types.TextCustomEmoji(document_id=5368324170671202286, alt="👍"),
+    ])
+    received = raw.types.PageButton(text=text, type=raw.types.InlineButtonTypeUrl(url="https://t.me"))
+
+    button = await types.RichMessageButton._parse(None, received)
+
+    assert button.write().text.write() == text.write()
+    assert button.write_text().text.write() == text.write()
+
+
+async def test_anchor_links_are_resolved_against_the_anchors_of_the_whole_message():
+    def link(name):
+        return raw.types.TextUrl(text=raw.types.TextPlain(text=name), url=f"#{name}", webpage_id=0)
+
+    received = raw.types.RichMessage(
+        blocks=[
+            raw.types.PageBlockParagraph(text=raw.types.TextConcat(texts=[
+                raw.types.TextAnchor(text=raw.types.TextEmpty(), name="plain"),
+                raw.types.TextAnchor(text=raw.types.TextPlain(text="Ref"), name="ref"),
+                raw.types.TextAnchor(text=raw.types.TextEmpty(), name="a b"),
+            ])),
+            raw.types.PageBlockList(items=[raw.types.PageListItemText(text=raw.types.TextConcat(texts=[
+                link("plain"), link("ref"), link("missing"), link("a%20b"),
+            ]))]),
+        ],
+        photos=[],
+        documents=[],
+    )
+
+    parsed = await types.RichMessage._parse(None, received)
+    links = parsed.blocks[1].items[0].blocks[0].text
+
+    assert [type(item).__name__ for item in links] == [
+        "RichTextAnchorLink", "RichTextReferenceLink", "RichTextUrl", "RichTextAnchorLink",
+    ]
+    assert links[0].anchor_name == "plain"
+    assert links[1].reference_name == "ref"
+    assert links[2].url == "#missing"
+    assert links[3].anchor_name == "a b"
