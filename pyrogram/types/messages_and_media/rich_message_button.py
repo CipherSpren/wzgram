@@ -16,7 +16,7 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Optional, Union
+from typing import Dict, Optional, Union
 
 from pyrogram import raw, types
 from pyrogram.enums import RichButtonStyle
@@ -148,12 +148,15 @@ class RichMessageButton(Object):
 
     @staticmethod
     async def _parse(
-        client, button: Union["raw.types.PageButton", "raw.types.TextButton"]
+        client,
+        button: Union["raw.types.PageButton", "raw.types.TextButton"],
+        users: Dict[int, "raw.base.User"] = {},
+        chats: Dict[int, "raw.base.Chat"] = {},
     ) -> "RichMessageButton":
         fields = read_button_type(button.type)
 
         return RichMessageButton(
-            text=await types.RichText._parse(client, button.text),
+            text=await types.RichText._parse(client, button.text, users, chats),
             style=RichMessageButton._parse_style(button.style),
             **{k: v for k, v in fields.items() if k in RichMessageButton._FIELDS},
         )
