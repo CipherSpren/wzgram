@@ -6287,6 +6287,22 @@ def test_an_unknown_entity_type_is_parsed_as_unknown(monkeypatch):
     assert entity.type == enums.MessageEntityType.UNKNOWN
 
 
+def test_bot_verification_description_is_text_with_entities():
+    verification = raw.types.BotVerification(
+        bot_id=1,
+        icon=2,
+        description=raw.types.TextWithEntities(
+            text="Verified",
+            entities=[raw.types.MessageEntityBold(offset=0, length=8)],
+        ),
+    )
+
+    description = types.BotVerification._parse(None, verification, {}).description
+
+    assert description == "Verified"
+    assert description.html == "<b>Verified</b>"
+
+
 class _TooLongClient:
     handle_updates = pyrogram.Client.handle_updates
     _save_update_state = pyrogram.Client._save_update_state
