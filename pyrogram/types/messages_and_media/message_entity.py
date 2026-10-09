@@ -45,7 +45,12 @@ def _build_entity_meta(cls):
         for base in cls.__mro__:
             slots.update(getattr(base, "__slots__", None) or ())
 
-        meta = (_PLAIN, enums.MessageEntityType(cls),
+        try:
+            entity_type = enums.MessageEntityType(cls)
+        except ValueError:
+            entity_type = enums.MessageEntityType.UNKNOWN
+
+        meta = (_PLAIN, entity_type,
                 "user_id" in slots, "document_id" in slots, "url" in slots,
                 "language" in slots, "collapsed" in slots)
 

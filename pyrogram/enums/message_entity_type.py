@@ -83,6 +83,9 @@ class MessageEntityType(AutoName):
     DATE_TIME = raw.types.MessageEntityFormattedDate
     "Date/time formatted text"
 
+    TON_ADDRESS = raw.types.MessageEntityTonAddress
+    "TON wallet address"
+
     INPUT_MENTION_NAME = raw.types.InputMessageEntityMentionName
     "for input users without usernames"
 

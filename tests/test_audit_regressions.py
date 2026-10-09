@@ -6268,6 +6268,25 @@ def test_a_mention_inside_received_rich_text_is_collected():
     assert _collect_mentioned_user_ids([InputRichBlockParagraph(text=text)]) == [555]
 
 
+def test_a_ton_address_entity_is_parsed():
+    entity = types.MessageEntity._parse(None, raw.types.MessageEntityTonAddress(offset=0, length=5), {})
+
+    assert entity.type == enums.MessageEntityType.TON_ADDRESS
+
+
+def test_an_unknown_entity_type_is_parsed_as_unknown(monkeypatch):
+    from pyrogram.types.messages_and_media import message_entity
+
+    class _NewEntity(raw.types.MessageEntityBold):
+        pass
+
+    monkeypatch.setattr(message_entity, "_ENTITY_META", {})
+
+    entity = types.MessageEntity._parse(None, _NewEntity(offset=1, length=2), {})
+
+    assert entity.type == enums.MessageEntityType.UNKNOWN
+
+
 class _TooLongClient:
     handle_updates = pyrogram.Client.handle_updates
     _save_update_state = pyrogram.Client._save_update_state
