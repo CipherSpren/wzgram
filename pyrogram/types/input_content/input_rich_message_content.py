@@ -19,7 +19,7 @@
 import logging
 
 import pyrogram
-from pyrogram import raw, types
+from pyrogram import raw, types, utils
 
 from .input_message_content import InputMessageContent
 
@@ -44,7 +44,7 @@ class InputRichMessageContent(InputMessageContent):
 
     async def write(self, client: "pyrogram.Client", reply_markup):
         return raw.types.InputBotInlineMessageRichMessage(
-            rich_message=self.rich_message.write(),
+            rich_message=await utils.build_input_rich_message(client, self.rich_message),
             reply_markup=await reply_markup.write(client) if reply_markup else None,
         )
 
