@@ -253,6 +253,7 @@ class SaveFile:
             _pacer = AdaptiveBucket(
                 rate=rate_limit, ceiling=max(rate_limit, 300), burst=PACER_BURST, step=1.0
             )
+            _paced = is_bot or not is_premium
             _stalled_since = 0.0
             _last_reported = -1
 
@@ -317,7 +318,8 @@ class SaveFile:
                                 file_id=file_id, file_part=file_part, bytes=chunk
                             )
 
-                        await _pacer.acquire()
+                        if _paced:
+                            await _pacer.acquire()
 
                         await budget.acquire()
 

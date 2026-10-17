@@ -1655,6 +1655,7 @@ class Client(Methods):
                 _getfile_rate = AdaptiveBucket(
                     rate=dl_rate, ceiling=max(dl_rate, 150), burst=dl_burst
                 )
+                _paced = _is_bot or not _is_premium
 
                 async def _worker(session):
                     nonlocal _done_count
@@ -1671,7 +1672,8 @@ class Client(Methods):
                             slept = 0.0
 
                             while True:
-                                await _getfile_rate.acquire()
+                                if _paced:
+                                    await _getfile_rate.acquire()
 
                                 try:
                                     r = await session.invoke(
