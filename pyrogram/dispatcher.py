@@ -53,6 +53,7 @@ from pyrogram.handlers import (
     RawUpdateHandler,
     ShippingQueryHandler,
     StoryHandler,
+    TonWalletStateHandler,
     UserStatusHandler,
 )
 from pyrogram.raw.types import (
@@ -94,6 +95,7 @@ from pyrogram.raw.types import (
     UpdateChatUserTyping,
     UpdateUserStatus,
     UpdateUserTyping,
+    UpdateWalletState,
 )
 
 log = logging.getLogger(__name__)
@@ -129,6 +131,7 @@ class Dispatcher:
     DELETED_BUSINESS_MESSAGES_UPDATES = (UpdateBotDeleteBusinessMessage,)
     MANAGED_BOT_UPDATES = (UpdateManagedBot,)
     GUEST_MESSAGE_UPDATES = (UpdateBotGuestChatQuery,)
+    TON_WALLET_STATE_UPDATES = (UpdateWalletState,)
 
     ENQUEUE_TIMEOUT = 5
 
@@ -151,6 +154,8 @@ class Dispatcher:
         self.relief_workers = set()
         self.parked = 0
         self.relief_capped = False
+        self.starting = False
+        self.unread_warned = False
 
         async def message_parser(update, users, chats):
             return (
@@ -324,6 +329,12 @@ class Dispatcher:
                 GuestMessageHandler
             )
 
+        async def ton_wallet_state_parser(update, users, chats):
+            return (
+                pyrogram.types.TonWalletState._parse(update.state),
+                TonWalletStateHandler
+            )
+
         self.update_parsers = {
             Dispatcher.NEW_MESSAGE_UPDATES: message_parser,
             Dispatcher.EDIT_MESSAGE_UPDATES: edited_message_parser,
@@ -349,6 +360,7 @@ class Dispatcher:
             Dispatcher.DELETED_BUSINESS_MESSAGES_UPDATES: deleted_business_messages_parser,
             Dispatcher.MANAGED_BOT_UPDATES: managed_bot_parser,
             Dispatcher.GUEST_MESSAGE_UPDATES: guest_message_parser,
+            Dispatcher.TON_WALLET_STATE_UPDATES: ton_wallet_state_parser,
         }
 
         self.update_parsers = {key: value for key_tuple, value in self.update_parsers.items() for key in key_tuple}
@@ -360,6 +372,17 @@ class Dispatcher:
             return True
         except asyncio.QueueFull:
             pass
+
+        if not self.handler_worker_tasks and not self.starting:
+            if not self.unread_warned:
+                self.unread_warned = True
+                log.warning(
+                    "Dropping updates: no handler worker is running to read them. "
+                    "Start the client with `start()` and `workers` above 0, or pass "
+                    "`no_updates=True` to stop receiving them."
+                )
+
+            return False
 
         try:
             await asyncio.wait_for(
@@ -378,24 +401,30 @@ class Dispatcher:
             return True
 
     async def start(self):
-        if callable(self.client.start_handler):
-            try:
-                await self.client.start_handler(self.client)
-            except Exception as e:
-                log.exception(e)
+        self.starting = True
+        self.unread_warned = False
 
-        if not self.client.no_updates:
-            for i in range(self.client.workers):
-                self.locks_list.append(asyncio.Lock())
+        try:
+            if callable(self.client.start_handler):
+                try:
+                    await self.client.start_handler(self.client)
+                except Exception as e:
+                    log.exception(e)
 
-                self.handler_worker_tasks.append(
-                    self.client.loop.create_task(self.handler_worker(self.locks_list[-1]))
-                )
+            if not self.client.no_updates:
+                for i in range(self.client.workers):
+                    self.locks_list.append(asyncio.Lock())
 
-            log.info("Started %s HandlerTasks", self.client.workers)
+                    self.handler_worker_tasks.append(
+                        self.client.loop.create_task(self.handler_worker(self.locks_list[-1]))
+                    )
 
-            if not self.client.skip_updates:
-                await self.client.recover_gaps()
+                log.info("Started %s HandlerTasks", self.client.workers)
+
+                if not self.client.skip_updates:
+                    await self.client.recover_gaps()
+        finally:
+            self.starting = False
 
     def prune_workers(self):
         self.handler_worker_tasks = [

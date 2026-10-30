@@ -689,6 +689,9 @@ class Message(Object, Update):
         content (``str``, *property*):
             The text or caption content of the message.
 
+        sender (:obj:`~pyrogram.types.User` | :obj:`~pyrogram.types.Chat`, *property*):
+            The sender of the message: ``from_user``, or ``sender_chat`` when there is no user.
+
         community_chat_added (:obj:`~pyrogram.types.CommunityChatAdded`, *optional*):
             Service message: a chat was added to the community.
 
@@ -697,6 +700,15 @@ class Message(Object, Update):
 
         community_chat_joined (:obj:`~pyrogram.types.CommunityChatJoined`, *optional*):
             Service message: the chat was joined by a user from a community.
+
+        ton_wallet_transfer (:obj:`~pyrogram.types.TonWalletTransfer`, *optional*):
+            Service message: a transfer with the TON wallet of the current user.
+
+        ton_connect_request (:obj:`~pyrogram.types.TonConnectRequest`, *optional*):
+            Service message: a request from a dApp received through TON Connect.
+
+        no_paid_messages_token_used (``bool``, *optional*):
+            Service message: the sender used a link that lets them message the user without paying Stars.
 
         scheduled (``bool``, *optional*):
             True, if the message is a scheduled message that has not been sent yet.
@@ -828,6 +840,9 @@ class Message(Object, Update):
         community_chat_added: Optional["types.CommunityChatAdded"] = None,
         community_chat_joined: Optional["types.CommunityChatJoined"] = None,
         community_chat_removed: Optional["types.CommunityChatRemoved"] = None,
+        ton_wallet_transfer: Optional["types.TonWalletTransfer"] = None,
+        ton_connect_request: Optional["types.TonConnectRequest"] = None,
+        no_paid_messages_token_used: Optional[bool] = None,
         premium_gift_code: Optional["types.PremiumGiftCode"] = None,
         gifted_premium: Optional["types.GiftedPremium"] = None,
         gifted_stars: Optional["types.GiftedStars"] = None,
@@ -1017,6 +1032,9 @@ class Message(Object, Update):
         self.community_chat_added = community_chat_added
         self.community_chat_joined = community_chat_joined
         self.community_chat_removed = community_chat_removed
+        self.ton_wallet_transfer = ton_wallet_transfer
+        self.ton_connect_request = ton_connect_request
+        self.no_paid_messages_token_used = no_paid_messages_token_used
         self.premium_gift_code = premium_gift_code
         self.gifted_premium = gifted_premium
         self.gifted_stars = gifted_stars
@@ -1176,6 +1194,9 @@ class Message(Object, Update):
         community_chat_added = None
         community_chat_joined = None
         community_chat_removed = None
+        ton_wallet_transfer = None
+        ton_connect_request = None
+        no_paid_messages_token_used = None
 
         service_type = enums.MessageServiceType.UNSUPPORTED
 
@@ -1464,6 +1485,15 @@ class Message(Object, Update):
             joined_peer_id = utils.get_raw_peer_id(message.from_id)
             if joined_peer_id in users:
                 new_chat_members = [types.User._parse(client, users[joined_peer_id])]
+        elif isinstance(action, raw.types.MessageActionGramTransfer):
+            service_type = enums.MessageServiceType.TON_WALLET_TRANSFER
+            ton_wallet_transfer = types.TonWalletTransfer._parse(client, action, users.get(from_id or peer_id))
+        elif isinstance(action, raw.types.MessageActionWalletTonConnectRequest):
+            service_type = enums.MessageServiceType.TON_CONNECT_REQUEST
+            ton_connect_request = types.TonConnectRequest._parse(action)
+        elif isinstance(action, raw.types.MessageActionNoPaidMessagesTokenUsed):
+            service_type = enums.MessageServiceType.NO_PAID_MESSAGES_TOKEN_USED
+            no_paid_messages_token_used = True
 
         parsed_message = Message(
             id=message.id,
@@ -1543,6 +1573,9 @@ class Message(Object, Update):
             community_chat_added=community_chat_added,
             community_chat_joined=community_chat_joined,
             community_chat_removed=community_chat_removed,
+            ton_wallet_transfer=ton_wallet_transfer,
+            ton_connect_request=ton_connect_request,
+            no_paid_messages_token_used=no_paid_messages_token_used,
             reactions=types.MessageReactions._parse(client, message.reactions, users, chats),
             business_connection_id=business_connection_id,
             raw=message,
@@ -2090,10 +2123,11 @@ class Message(Object, Update):
                 else:
                     parsed_message.message_thread_id = 1
 
-            if message.reply_to.quote:
-                parsed_message.quote = types.TextQuote._parse(
+            if message.reply_to.quote or message.reply_to.quote_text or message.reply_to.quote_rich:
+                parsed_message.quote = await types.TextQuote._parse(
                     client,
                     users,
+                    chats,
                     message.reply_to
                 )
 
@@ -2267,6 +2301,10 @@ class Message(Object, Update):
                 return f"https://t.me/c/{utils.get_channel_id(self.chat.id)}/{self.message_thread_id}/{self.id}"
             else:
                 return f"https://t.me/c/{utils.get_channel_id(self.chat.id)}/{self.id}"
+
+    @property
+    def sender(self) -> Optional[Union["types.User", "types.Chat"]]:
+        return self.from_user or self.sender_chat
 
     @property
     def content(self) -> Str:

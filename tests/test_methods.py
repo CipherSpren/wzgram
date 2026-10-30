@@ -1789,3 +1789,211 @@ async def test_get_messages_sends_message_id_zero(kwargs):
 
     assert await GetMessages.get_messages(client, "me", **kwargs) is None
     assert client.invoke.await_args.args[0].id[0].id == 0
+
+
+def _wallet_addresses(*user_ids):
+    return raw.types.wallet.UserAddresses(
+        addresses=[
+            raw.types.WalletUserAddress(user_id=i, address=f"UQ{i}", public_key=bytes([i]))
+            for i in user_ids
+        ],
+        users=[raw.types.User(id=i, first_name=str(i), usernames=[], restriction_reason=[]) for i in user_ids]
+    )
+
+
+async def test_wallet_addresses_are_asked_for_by_user():
+    client = FakeClient([_wallet_addresses(5, 6)])
+
+    found = await pyrogram.Client.get_user_ton_wallet_addresses(client, [5, 6])
+
+    sent = client.sent[0]
+    assert isinstance(sent, raw.functions.wallet.GetUserAddresses)
+    assert [p.user_id for p in sent.id] == [5, 6] and sent.addresses == [] and not sent.force
+    assert [(a.wallet_address, a.user.id) for a in found] == [("UQ5", 5), ("UQ6", 6)]
+
+
+async def test_a_single_wallet_user_is_accepted_too():
+    client = FakeClient([_wallet_addresses(5)])
+
+    found = await pyrogram.Client.get_user_ton_wallet_addresses(client, 5)
+
+    assert [a.user.id for a in found] == [5]
+
+
+async def test_creating_a_user_wallet_forces_the_lookup():
+    client = FakeClient([_wallet_addresses(5)])
+
+    created = await pyrogram.Client.create_user_wallet(client, 5)
+
+    assert client.sent[0].force is True
+    assert created.wallet_address == "UQ5"
+
+
+async def test_a_wallet_is_looked_up_by_its_address():
+    client = FakeClient([_wallet_addresses(5), _wallet_addresses()])
+
+    found = await pyrogram.Client.get_address_ton_wallet(client, "UQ5")
+    missing = await pyrogram.Client.get_address_ton_wallet(client, "UQnone")
+
+    assert client.sent[0].addresses == ["UQ5"] and client.sent[0].id == []
+    assert found.wallet_address == "UQ5" and found.user.id == 5
+    assert missing is None
+
+
+async def test_the_proof_challenge_keeps_its_expiry():
+    client = FakeClient([raw.types.wallet.ProofChallenge(payload="p", expires=1700000000, domain="d")])
+
+    challenge = await pyrogram.Client.get_ton_wallet_ownership_proof_challenge(client)
+
+    assert (challenge.payload, challenge.domain) == ("p", "d")
+    assert challenge.expiration_date.timestamp() == 1700000000
+
+
+async def test_replacing_a_wallet_sends_the_proof_without_a_password():
+    state = raw.types.WalletState(address="UQ1", public_key=b"k", balance=7, backup_enabled=True)
+    client = FakeClient([state])
+    proof = types.TonWalletOwnershipProof(public_key=b"new", timestamp=10, signature=b"sig")
+
+    result = await pyrogram.Client.replace_ton_wallet(client, proof)
+
+    sent = client.sent[0]
+    assert isinstance(sent.wallet, raw.types.InputWalletImported)
+    assert (sent.wallet.public_key, sent.wallet.proof.timestamp, sent.wallet.proof.signature) == (b"new", 10, b"sig")
+    assert sent.password is None
+    assert (result.wallet_address, result.gram_amount, result.is_backup_enabled) == ("UQ1", 7, True)
+
+
+async def test_deleting_a_wallet_asks_for_a_new_one():
+    client = FakeClient([raw.types.WalletStateEmpty(creating=True)])
+
+    result = await pyrogram.Client.delete_ton_wallet(client)
+
+    assert isinstance(client.sent[0].wallet, raw.types.InputWalletNew)
+    assert result.is_being_created is True and result.wallet_address is None
+
+
+async def test_deleting_a_gift_sends_the_saved_gift():
+    client = FakeClient([True])
+    client.SAVED_GIFT_RE = pyrogram.Client.SAVED_GIFT_RE
+    client.UPGRADED_GIFT_RE = pyrogram.Client.UPGRADED_GIFT_RE
+
+    assert await pyrogram.Client.delete_gift(client, "https://t.me/nft/abc-1") is True
+    assert isinstance(client.sent[0], raw.functions.payments.DeleteStarGift)
+    assert client.sent[0].stargift.slug == "abc-1"
+
+
+async def test_the_ton_wallet_state_is_read():
+    client = FakeClient([raw.types.WalletState(
+        address="UQme", public_key=b"k", balance=7, backup_enabled=True, can_export_phrase=True
+    )])
+
+    state = await pyrogram.Client.get_ton_wallet_state(client)
+
+    assert isinstance(client.sent[0], raw.functions.wallet.GetState)
+    assert (state.wallet_address, state.gram_amount, state.is_backup_enabled) == ("UQme", 7, True)
+
+
+async def test_a_wallet_state_update_reaches_the_wallet_handler():
+    from unittest.mock import Mock
+
+    from pyrogram.dispatcher import Dispatcher
+    from pyrogram.handlers import TonWalletStateHandler
+
+    parser = Dispatcher(Mock(listeners=None)).update_parsers[raw.types.UpdateWalletState]
+
+    state, handler_type = await parser(
+        raw.types.UpdateWalletState(state=raw.types.WalletStateEmpty(creating=True)), {}, {}
+    )
+
+    assert handler_type is TonWalletStateHandler
+    assert state.is_being_created is True and state.wallet_address is None
+
+
+def _backdrop(i):
+    return raw.types.ShareThemeBackdropOption(
+        backdrop_id=i, name=f"b{i}", center_color=1, edge_color=2, pattern_color=3, text_color=4
+    )
+
+
+async def test_share_theme_backdrops_are_listed():
+    client = FakeClient([raw.types.ShareThemeBackdrops(hash=1, backdrops=[_backdrop(0), _backdrop(49)])])
+
+    found = await pyrogram.Client.get_share_theme_backdrops(client)
+
+    assert client.sent[0].hash == 0
+    assert [(b.id, b.name, b.text_color) for b in found] == [(0, "b0", 4), (49, "b49", 4)]
+
+
+async def test_unchanged_share_theme_backdrops_are_an_empty_list():
+    client = FakeClient([raw.types.ShareThemeBackdropsNotModified()])
+
+    assert await pyrogram.Client.get_share_theme_backdrops(client) == []
+
+
+async def test_a_share_theme_is_set_from_a_backdrop_and_emojis():
+    client = FakeClient([True])
+
+    assert await pyrogram.Client.set_share_theme(client, backdrop_id=49, emojis=["🔥", 7], chat_id=-100) is True
+
+    sent = client.sent[0]
+    assert isinstance(sent.peer, raw.types.InputPeerChannel) and sent.theme.backdrop_id == 49
+    assert [type(e) for e in sent.theme.emojis] == [raw.types.ReactionEmoji, raw.types.ReactionCustomEmoji]
+    assert (sent.theme.emojis[0].emoticon, sent.theme.emojis[1].document_id) == ("🔥", 7)
+
+
+async def test_no_share_theme_arguments_mean_the_default_theme():
+    client = FakeClient([True])
+
+    await pyrogram.Client.set_share_theme(client)
+
+    assert isinstance(client.sent[0].theme, raw.types.ShareThemeDefault)
+
+
+async def test_a_share_theme_from_a_gift_uses_the_owned_gift():
+    client = FakeClient([True])
+    client.SAVED_GIFT_RE = pyrogram.Client.SAVED_GIFT_RE
+    client.UPGRADED_GIFT_RE = pyrogram.Client.UPGRADED_GIFT_RE
+
+    await pyrogram.Client.set_share_theme(client, gift_id="123456")
+
+    assert client.sent[0].theme.stargift == raw.types.InputSavedStarGiftUser(msg_id=123456)
+
+
+async def test_a_gift_share_theme_refuses_a_backdrop_too():
+    with pytest.raises(ValueError):
+        await pyrogram.Client.set_share_theme(FakeClient(), backdrop_id=1, gift_id="123456")
+
+
+async def test_a_no_paid_messages_link_is_exported():
+    client = FakeClient([raw.types.ExportedNoPaidMessagesToken(token="abc", url="https://t.me/me?free=abc", expires=1700000000)])
+
+    token = await pyrogram.Client.export_no_paid_messages_token(client, temporary=True)
+
+    assert (client.sent[0].temporary, client.sent[0].revoke) == (True, False)
+    assert (token.token, token.link) == ("abc", "https://t.me/me?free=abc")
+    assert token.expiration_date.timestamp() == 1700000000
+
+
+@pytest.mark.parametrize("token", ["abc", "https://t.me/someone?free=abc"])
+async def test_a_no_paid_messages_link_is_used_by_token_or_link(token):
+    client = FakeClient([raw.types.User(id=5, first_name="Someone", usernames=[], restriction_reason=[])])
+
+    user = await pyrogram.Client.import_no_paid_messages_token(client, 5, token)
+
+    assert (client.sent[0].user_id.user_id, client.sent[0].token) == (5, "abc")
+    assert user.id == 5
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parent"),
+    [({}, None), ({"require_payment": True, "refund_charged": True, "chat_id": -100}, raw.types.InputPeerChannel)]
+)
+async def test_the_no_paid_messages_exception_is_toggled(kwargs, parent):
+    client = FakeClient([True])
+
+    assert await pyrogram.Client.toggle_no_paid_messages_exception(client, 5, **kwargs) is True
+
+    sent = client.sent[0]
+    assert sent.user_id.user_id == 5
+    assert (sent.require_payment, sent.refund_charged) == (kwargs.get("require_payment", False), kwargs.get("refund_charged", False))
+    assert type(sent.parent_peer) is (parent or type(None))

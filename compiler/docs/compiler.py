@@ -153,6 +153,7 @@ def pyrogram_api():
             set_inactive_session_ttl
             set_privacy
             set_profile_audio_position
+            toggle_no_paid_messages_exception
         """,
         advanced="""
         Advanced
@@ -341,10 +342,12 @@ def pyrogram_api():
         Contacts
             add_contact
             delete_contacts
+            export_no_paid_messages_token
             get_blocked_message_senders
             get_contacts
             get_contacts_count
             import_contacts
+            import_no_paid_messages_token
             search_contacts
             set_contact_note
         """,
@@ -537,6 +540,7 @@ def pyrogram_api():
             convert_gift_to_stars
             craft_gift
             create_gift_collection
+            delete_gift
             delete_gift_collection
             drop_gift_original_details
             edit_star_subscription
@@ -578,6 +582,16 @@ def pyrogram_api():
         phone="""
         Phone
             get_call_members
+        """,
+        wallet="""
+        Wallet
+            create_user_wallet
+            delete_ton_wallet
+            get_address_ton_wallet
+            get_ton_wallet_ownership_proof_challenge
+            get_ton_wallet_state
+            get_user_ton_wallet_addresses
+            replace_ton_wallet
         """,
         premium="""
         Premium
@@ -621,11 +635,13 @@ def pyrogram_api():
             get_common_chats
             get_default_emoji_statuses
             get_me
+            get_share_theme_backdrops
             get_users
             set_bot_profile_photo
             set_emoji_status
             set_personal_channel
             set_profile_photo
+            set_share_theme
             set_username
             unblock_user
             update_birthday
@@ -684,6 +700,7 @@ def pyrogram_api():
             on_start
             on_stop
             on_story
+            on_ton_wallet_state
             on_user_status
         """,
     )
@@ -765,7 +782,14 @@ def pyrogram_api():
             PhoneCallStarted
             PrivacyRule
             StoriesStealthMode
+            TonWalletOwnershipProof
+            TonWalletOwnershipProofChallenge
+            TonWalletState
             UserRating
+            UserTonWalletAddress
+            NoPaidMessagesToken
+            ShareTheme
+            ShareThemeBackdrop
             AcceptedGiftTypes
             BotVerification
             BusinessBotRights
@@ -900,6 +924,8 @@ def pyrogram_api():
             SuggestedPostPrice
             SuggestedPostRefunded
             TextQuote
+            TonConnectRequest
+            TonWalletTransfer
             UpgradedGiftAttributeId
             UpgradedGiftAttributeIdBackdrop
             UpgradedGiftAttributeIdModel

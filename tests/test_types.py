@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -1931,3 +1932,122 @@ async def test_giveaway_winners_parse_when_the_launch_message_is_gone():
 
     assert winners.giveaway_message_id == 5
     assert winners.giveaway_message is None
+
+
+def _service(action):
+    return raw.types.MessageService(
+        id=3,
+        from_id=raw.types.PeerUser(user_id=1),
+        peer_id=raw.types.PeerUser(user_id=2),
+        date=0,
+        action=action
+    )
+
+
+async def test_a_gram_transfer_becomes_a_ton_wallet_transfer():
+    users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
+    action = raw.types.MessageActionGramTransfer(
+        amount=5, peer_address="UQabc", transaction_id="tx1", comment="hi", comment_encrypted=True
+    )
+
+    parsed = await types.Message._parse(MagicMock(), _service(action), users, {})
+
+    assert parsed.service == enums.MessageServiceType.TON_WALLET_TRANSFER
+    transfer = parsed.ton_wallet_transfer
+    assert (transfer.amount, transfer.peer_address, transfer.comment) == (5, "UQabc", "hi")
+    assert transfer.is_comment_encrypted is True
+    assert transfer.sender.id == 1
+    assert transfer.link == "https://tonviewer.com/transaction/tx1"
+
+
+@pytest.mark.parametrize(
+    ("accepted", "declined"),
+    [(None, None), (True, None), (None, True)]
+)
+async def test_a_ton_connect_request_keeps_its_state(accepted, declined):
+    users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
+    action = raw.types.MessageActionWalletTonConnectRequest(
+        session_id=9, expires=1700000000, accepted=accepted, declined=declined, dapp_name="dapp"
+    )
+
+    parsed = await types.Message._parse(MagicMock(), _service(action), users, {})
+
+    assert parsed.service == enums.MessageServiceType.TON_CONNECT_REQUEST
+    request = parsed.ton_connect_request
+    assert (request.session_id, request.dapp_name) == (9, "dapp")
+    assert (request.is_accepted, request.is_declined) == (accepted, declined)
+    assert request.expiration_date.timestamp() == 1700000000
+
+
+def test_the_sender_is_the_user_or_else_the_chat():
+    user = types.User(id=1)
+    chat = types.Chat(id=-100)
+
+    assert types.Message(id=1, from_user=user, sender_chat=chat).sender is user
+    assert types.Message(id=1, sender_chat=chat).sender is chat
+    assert types.Message(id=1).sender is None
+
+
+def _quoted_reply(**quote):
+    return raw.core.TLObject.read(BytesIO(raw.types.Message(
+        id=4,
+        from_id=raw.types.PeerUser(user_id=1),
+        peer_id=raw.types.PeerUser(user_id=2),
+        date=0,
+        message="reply",
+        reply_to=raw.types.MessageReplyHeader(reply_to_msg_id=3, **quote)
+    ).write()))
+
+
+async def test_a_rich_quote_keeps_its_rich_text_and_a_plain_copy():
+    users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
+    reply = _quoted_reply(
+        quote=True,
+        quote_rich=[raw.types.TextBold(text=raw.types.TextPlain(text="hi")), raw.types.TextPlain(text=" there")],
+        quote_offset=4
+    )
+
+    quote = (await types.Message._parse(MagicMock(), reply, users, {}, replies=0)).quote
+
+    assert quote.text == "hi there"
+    assert quote.rich_text[0].text == "hi" and quote.rich_text[1] == " there"
+    assert (quote.position, quote.is_manual, quote.entities) == (4, True, None)
+
+
+async def test_an_automatic_quote_is_kept_too():
+    users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
+
+    quote = (await types.Message._parse(MagicMock(), _quoted_reply(quote_text="hello"), users, {}, replies=0)).quote
+
+    assert (quote.text, quote.is_manual, quote.rich_text) == ("hello", False, None)
+
+
+async def test_a_reply_without_a_quote_has_none():
+    users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
+
+    assert (await types.Message._parse(MagicMock(), _quoted_reply(), users, {}, replies=0)).quote is None
+
+
+async def test_a_used_no_paid_messages_token_is_a_service_message():
+    users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
+
+    parsed = await types.Message._parse(MagicMock(), _service(raw.types.MessageActionNoPaidMessagesTokenUsed()), users, {})
+
+    assert parsed.service == enums.MessageServiceType.NO_PAID_MESSAGES_TOKEN_USED
+    assert parsed.no_paid_messages_token_used is True
+
+
+async def test_an_emoji_backdrop_share_theme_is_parsed():
+    theme = raw.types.ShareThemeEmojiBackdrop(
+        backdrop_id=49, emojis=[raw.types.ReactionEmoji(emoticon="🔥"), raw.types.ReactionCustomEmoji(document_id=7)]
+    )
+
+    parsed = await types.ShareTheme._parse(MagicMock(), theme, {}, {})
+
+    assert parsed.backdrop_id == 49 and parsed.gift is None
+    assert [(e.emoji, e.custom_emoji_id) for e in parsed.emojis] == [("🔥", None), (None, "7")]
+
+
+@pytest.mark.parametrize("theme", [None, raw.types.ShareThemeDefault()])
+async def test_no_share_theme_or_the_default_one_is_none(theme):
+    assert await types.ShareTheme._parse(MagicMock(), theme, {}, {}) is None
