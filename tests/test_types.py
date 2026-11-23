@@ -1,3 +1,4 @@
+import gzip
 from datetime import datetime, timezone
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, Mock
@@ -1518,6 +1519,7 @@ class TestPinBusinessConnection:
             return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
 
         client = AsyncMock(spec=pyrogram.Client)
+        client.me = None
         client.invoke = invoke
         client.resolve_peer = AsyncMock(return_value=raw.types.InputPeerSelf())
 
@@ -2051,3 +2053,157 @@ async def test_an_emoji_backdrop_share_theme_is_parsed():
 @pytest.mark.parametrize("theme", [None, raw.types.ShareThemeDefault()])
 async def test_no_share_theme_or_the_default_one_is_none(theme):
     assert await types.ShareTheme._parse(MagicMock(), theme, {}, {}) is None
+
+
+async def test_a_bot_invite_is_write_access_with_the_inviter():
+    users = {1: _raw_user(1, "Owner"), 2: _raw_user(2, "Bot")}
+
+    parsed = await types.Message._parse(MagicMock(), _service(raw.types.MessageActionBotInvite(inviter_id=1)), users, {})
+
+    assert parsed.service == enums.MessageServiceType.WRITE_ACCESS_ALLOWED
+    assert parsed.write_access_allowed.inviter.id == 1
+
+
+@pytest.mark.parametrize("sidebar", [None, True])
+def test_a_bot_shows_its_topic_sidebar(sidebar):
+    user = raw.types.User(id=1, first_name="b", bot=True, bot_forum_sidebar=sidebar, usernames=[], restriction_reason=[])
+
+    assert types.User._parse(MagicMock(), user).has_topic_sidebar is sidebar
+
+
+def _widget_media(payload, **kwargs):
+    return raw.types.MessageMediaWidget(width=0, height=120, payload=payload, **kwargs)
+
+
+async def test_a_widget_message_unpacks_its_html():
+    users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
+    message = raw.core.TLObject.read(BytesIO(raw.types.Message(
+        id=5, from_id=raw.types.PeerUser(user_id=1), peer_id=raw.types.PeerUser(user_id=2), date=0,
+        message="cap", media=_widget_media(gzip.compress("<b>hi</b>".encode()), widget_id=9, chat_data="c", can_query=True),
+    ).write()))
+
+    parsed = await types.Message._parse(MagicMock(), message, users, {}, replies=0)
+
+    assert parsed.media == enums.MessageMediaType.WIDGET
+    assert (parsed.caption, parsed.text) == ("cap", None)
+    widget = parsed.widget
+    assert (widget.html, widget.id, widget.width, widget.height, widget.chat_data) == ("<b>hi</b>", "9", None, 120, "c")
+    assert widget.can_query is True
+
+
+def test_a_widget_with_a_broken_payload_is_dropped():
+    assert types.Widget._parse(_widget_media(b"not gzip")) is None
+
+
+async def test_a_ton_wallet_card_keeps_its_stickers():
+    nft = raw.types.wallet.NftItem(
+        address="EQnft", owner_address="UQme", index="7", name="Cat",
+        attributes=[raw.types.wallet.NftAttribute(trait_type="eyes", value="blue")],
+    )
+    card = raw.types.wallet.Card(
+        address="UQme", balance=1500000000, bg_nft_item=nft,
+        stickers=[raw.types.wallet.CardSticker(
+            coordinates=raw.types.MediaAreaCoordinates(x=10.0, y=20.0, w=30.0, h=40.0, rotation=90.0),
+            nft=nft,
+        )],
+    )
+
+    parsed = await types.TonWalletCard._parse(MagicMock(), card)
+
+    assert (parsed.address, parsed.amount, parsed.background_nft_address) == ("UQme", "1500000000", "EQnft")
+    sticker = parsed.stickers[0]
+    assert (sticker.position.x_percentage, sticker.position.rotation_angle, sticker.position.corner_radius_percentage) == (10.0, 90.0, 0.0)
+    assert (sticker.nft.name, sticker.nft.description, sticker.nft.attributes[0].value) == ("Cat", "", "blue")
+    assert await types.TonWalletCard._parse(MagicMock(), None) is None
+
+
+async def test_a_reply_can_quote_rich_texts():
+    client = MagicMock()
+    client.resolve_peer = AsyncMock()
+    bold = raw.types.TextBold(text=raw.types.TextPlain(text="b"))
+
+    reply_to = await pyrogram.utils.get_reply_to(
+        client, types.ReplyParameters(message_id=3, quote_rich_texts=["a", bold])
+    )
+
+    assert reply_to.quote_rich == [raw.types.TextPlain(text="a"), bold]
+
+
+def _user_wallet():
+    return raw.types.UserWallet(address="UQw", balance=5, public_key=b"\x01\x02", state_init=b"si")
+
+
+@pytest.mark.parametrize(
+    ("query_type", "kind"),
+    [
+        (raw.types.WidgetQueryTypeData(), types.WidgetQueryTypeData),
+        (raw.types.WidgetQueryTypeSignData(wallet=_user_wallet(), sign_data=raw.types.DataJSON(data='{"a":1}')), types.WidgetQueryTypeSignData),
+        (raw.types.WidgetQueryTypeSentTransaction(wallet=_user_wallet(), msg_hash="h"), types.WidgetQueryTypeSentTransaction),
+    ],
+)
+async def test_a_widget_query_from_a_message(query_type, kind):
+    users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Bot")}
+    update = raw.types.UpdateBotWidgetQuery(
+        query_id=10, query_type=query_type, user_id=1, peer=raw.types.PeerUser(user_id=1), msg_id=4,
+        chat_instance=-3, chat_type="private", data=b"hi", widget_id=8,
+    )
+
+    query = await types.WidgetQuery._parse(MagicMock(), update, users, {})
+
+    assert (query.id, query.from_user.id, query.chat.id, query.message_id, query.inline_message_id) == ("10", 1, 1, 4, None)
+    assert (query.chat_instance, query.chat_type, query.data, query.widget_id) == ("-3", enums.ChatType.PRIVATE, "hi", "8")
+    assert type(query.type) is kind
+    if kind is not types.WidgetQueryTypeData:
+        assert (query.type.wallet.address, query.type.wallet.amount, query.type.wallet.public_key, query.type.wallet.state_init) == ("UQw", "5", "0102", "c2k=")
+
+
+async def test_a_widget_query_from_an_inline_message_has_no_chat():
+    update = raw.types.UpdateInlineBotWidgetQuery(
+        query_id=10, query_type=raw.types.WidgetQueryTypeData(), user_id=1,
+        inline_message_id=raw.types.InputBotInlineMessageID(dc_id=2, id=3, access_hash=4),
+        chat_instance=1, chat_type="sender", data=b"\xff",
+    )
+
+    query = await types.WidgetQuery._parse(MagicMock(), update, {1: _raw_user(1, "Sender")}, {})
+
+    assert (query.chat, query.message_id, query.chat_type, query.data, query.widget_id) == (None, None, enums.ChatType.BOT, b"\xff", None)
+    assert query.inline_message_id
+
+
+async def test_a_shared_widget_query_and_its_handler():
+    from pyrogram.dispatcher import Dispatcher
+    from pyrogram.handlers import SharedWidgetQueryHandler
+
+    update = raw.types.UpdateBotWidgetCopyQuery(query_id=10, query_type=raw.types.WidgetQueryTypeData(), user_id=1, data=b"d", widget_id=8)
+    client = MagicMock()
+    client.answer_widget_query = AsyncMock(return_value=True)
+
+    query = await types.SharedWidgetQuery._parse(client, update, {1: _raw_user(1, "Sender")}, {})
+
+    assert (query.id, query.data, query.widget_id) == ("10", "d", "8")
+    assert await query.answer("ok") is True
+    client.answer_widget_query.assert_awaited_once_with("10", "ok")
+
+    parsers = Dispatcher(client).update_parsers
+    assert (await parsers[raw.types.UpdateBotWidgetCopyQuery](update, {1: _raw_user(1, "Sender")}, {}))[1] is SharedWidgetQueryHandler
+    assert raw.types.UpdateBotWidgetQuery in parsers and raw.types.UpdateInlineBotWidgetQuery in parsers
+
+
+async def test_inline_widget_contents_write_widget_messages(no_text_types):
+    client = MagicMock()
+
+    widget = await types.InputWidgetMessageContent("<i>w</i>", height=60, is_shared=True, caption="c").write(client, None)
+    shared = await types.InputSharedWidgetMessageContent("77", chat_data="d").write(client, None)
+
+    assert isinstance(widget, raw.types.InputBotInlineMessageWidget)
+    assert (widget.html, widget.width, widget.height, widget.shared_widget, widget.message) == ("<i>w</i>", 0, 60, True, "c")
+    assert isinstance(shared, raw.types.InputBotInlineMessageWidgetId)
+    assert (shared.widget_id, shared.chat_data, shared.message) == (77, "d", "")
+
+
+@pytest.fixture
+def no_text_types(monkeypatch):
+    async def parse_text_entities(client, text, parse_mode, entities):
+        return {"message": text or "", "entities": None}
+
+    monkeypatch.setattr(pyrogram.utils, "parse_text_entities", parse_text_entities)

@@ -1997,3 +1997,82 @@ async def test_the_no_paid_messages_exception_is_toggled(kwargs, parent):
     assert sent.user_id.user_id == 5
     assert (sent.require_payment, sent.refund_charged) == (kwargs.get("require_payment", False), kwargs.get("refund_charged", False))
     assert type(sent.parent_peer) is (parent or type(None))
+
+
+async def test_set_my_settings_maps_to_bot_settings():
+    client = FakeClient([raw.types.UserEmpty(id=1)])
+
+    assert await pyrogram.Client.set_my_settings(
+        client,
+        can_join_groups=False,
+        has_topic_sidebar=True,
+        callback_query_mode="default",
+        inline_feedback_share_denominator=10,
+    ) is True
+
+    sent = client.sent[0]
+    assert isinstance(sent, raw.functions.bots.SetBotSettings)
+    assert (sent.nochats, sent.forum_sidebar, sent.callback_mode, sent.inline_feedback) == (True, True, "", 10)
+    assert (sent.bot, sent.chat_history, sent.forum_view) == (None, None, None)
+
+
+@pytest.mark.parametrize("kwargs", [{"callback_query_mode": "always"}, {"inline_feedback_share_denominator": 5}])
+async def test_set_my_settings_refuses_bad_values(kwargs):
+    client = FakeClient()
+
+    with pytest.raises(ValueError):
+        await pyrogram.Client.set_my_settings(client, **kwargs)
+
+    assert client.sent == []
+
+
+async def test_invite_users_to_bot_takes_one_id_or_a_list():
+    client = FakeClient([True, True])
+
+    assert await pyrogram.Client.invite_users_to_bot(client, 9, 5) is True
+    await pyrogram.Client.invite_users_to_bot(client, 9, [5, 6])
+
+    assert [u.user_id for u in client.sent[0].users] == [5]
+    assert [u.user_id for u in client.sent[1].users] == [5, 6]
+    assert client.sent[0].bot.user_id == 9
+
+
+async def test_send_widget_writes_the_widget_media(no_text):
+    client = FakeClient()
+
+    await pyrogram.Client.send_widget(client, 5, "<b>x</b>", height=100, chat_data="c", allow_queries=True, caption="cap")
+
+    sent = client.sent[0]
+    assert isinstance(sent, raw.functions.messages.SendMedia)
+    media = sent.media
+    assert isinstance(media, raw.types.InputMediaWidget)
+    assert (media.html, media.width, media.height, media.chat_data, media.allow_queries, media.shared_widget) == ("<b>x</b>", 0, 100, "c", True, None)
+    assert sent.message == "cap"
+
+
+async def test_send_shared_widget_sends_the_widget_by_id(no_text):
+    client = FakeClient()
+
+    await pyrogram.Client.send_shared_widget(client, 5, "77", chat_data="c")
+
+    media = client.sent[0].media
+    assert isinstance(media, raw.types.InputMediaWidgetId)
+    assert (media.widget_id, media.chat_data) == (77, "c")
+
+
+async def test_widget_data_methods_hit_the_right_rpcs():
+    client = FakeClient([True, raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0), True])
+
+    assert await pyrogram.Client.answer_widget_query(client, "12", "ok") is True
+    assert await pyrogram.Client.edit_message_widget_data(client, 5, 9, chat_data="") is True
+    assert await pyrogram.Client.edit_shared_widget_data(client, "77", "p", cache_time=60) is True
+
+    answer, edit, shared = client.sent
+    assert (answer.query_id, answer.result) == (12, "ok")
+    assert (edit.id, edit.chat_data, edit.public_data) == (9, "", None)
+    assert (shared.widget_id, shared.public_data, shared.cache_time) == (77, "p", 60)
+
+
+async def test_edit_message_widget_data_needs_a_message():
+    with pytest.raises(ValueError):
+        await pyrogram.Client.edit_message_widget_data(FakeClient(), chat_id=5)

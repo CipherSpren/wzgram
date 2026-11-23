@@ -198,6 +198,7 @@ def pyrogram_api():
             answer_pre_checkout_query
             answer_shipping_query
             answer_web_app_query
+            answer_widget_query
             can_bot_send_message
             check_bot_username
             create_bot
@@ -217,6 +218,7 @@ def pyrogram_api():
             get_managed_bot_access_settings
             get_managed_bot_token
             get_owned_bots
+            invite_users_to_bot
             refund_star_payment
             replace_managed_bot_token
             request_callback_answer
@@ -232,6 +234,7 @@ def pyrogram_api():
             set_chat_menu_button
             set_game_score
             set_managed_bot_access_settings
+            set_my_settings
         """,
         business="""
         Business
@@ -418,6 +421,8 @@ def pyrogram_api():
             edit_inline_caption
             edit_inline_media
             edit_inline_reply_markup
+            edit_message_widget_data
+            edit_shared_widget_data
             edit_inline_text
             edit_message_caption
             edit_message_checklist
@@ -465,6 +470,8 @@ def pyrogram_api():
             send_checklist
             send_contact
             send_dice
+            send_shared_widget
+            send_widget
             send_document
             send_ephemeral_message
             send_location
@@ -674,6 +681,8 @@ def pyrogram_api():
             on_business_connection
             on_business_message
             on_callback_query
+            on_shared_widget_query
+            on_widget_query
             on_chat_boost
             on_chat_join_request
             on_chat_member_updated
@@ -784,6 +793,11 @@ def pyrogram_api():
             StoriesStealthMode
             TonWalletOwnershipProof
             TonWalletOwnershipProofChallenge
+            AreaPosition
+            TonNft
+            TonNftAttribute
+            TonWalletCard
+            TonWalletCardSticker
             TonWalletState
             UserRating
             UserTonWalletAddress
@@ -934,6 +948,7 @@ def pyrogram_api():
             UpgradedGiftOriginalDetails
             UpgradedGiftPurchaseOffer
             UpgradedGiftValueInfo
+            Widget
             WriteAccessAllowed
             AuctionBid
             AuctionRound
@@ -1041,6 +1056,13 @@ def pyrogram_api():
             LoginUrl
             ForceReply
             CallbackQuery
+            WidgetQuery
+            SharedWidgetQuery
+            WidgetQueryType
+            WidgetQueryTypeData
+            WidgetQueryTypeSignData
+            WidgetQueryTypeSentTransaction
+            WidgetQueryWallet
             GameHighScore
             CallbackGame
             WebAppInfo
@@ -1147,6 +1169,8 @@ def pyrogram_api():
             InputRichMessage
             InputRichMessageContent
             InputTextMessageContent
+            InputWidgetMessageContent
+            InputSharedWidgetMessageContent
             InputContactMessageContent
             InputLocationMessageContent
             InputVenueMessageContent
@@ -1432,6 +1456,11 @@ def pyrogram_api():
             CallbackQuery.edit_message_caption
             CallbackQuery.edit_message_media
             CallbackQuery.edit_message_reply_markup
+        """,
+        widget_query="""
+        Widget Query
+            WidgetQuery.answer
+            SharedWidgetQuery.answer
         """,
         inline_query="""
         InlineQuery

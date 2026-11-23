@@ -24,6 +24,7 @@ from .answer_inline_query import AnswerInlineQuery
 from .answer_pre_checkout_query import AnswerPreCheckoutQuery
 from .answer_shipping_query import AnswerShippingQuery
 from .answer_web_app_query import AnswerWebAppQuery
+from .answer_widget_query import AnswerWidgetQuery
 from .can_bot_send_message import CanBotSendMessage
 from .check_bot_username import CheckBotUsername
 from .create_bot import CreateBot
@@ -43,6 +44,7 @@ from .get_inline_bot_results import GetInlineBotResults
 from .get_managed_bot_access_settings import GetManagedBotAccessSettings
 from .get_managed_bot_token import GetManagedBotToken
 from .get_owned_bots import GetOwnedBots
+from .invite_users_to_bot import InviteUsersToBot
 from .refund_star_payment import RefundStarPayment
 from .replace_managed_bot_token import ReplaceManagedBotToken
 from .request_callback_answer import RequestCallbackAnswer
@@ -58,6 +60,7 @@ from .set_bot_name import SetBotName
 from .set_chat_menu_button import SetChatMenuButton
 from .set_game_score import SetGameScore
 from .set_managed_bot_access_settings import SetManagedBotAccessSettings
+from .set_my_settings import SetMySettings
 
 
 class Bots(
@@ -69,6 +72,7 @@ class Bots(
     AnswerPreCheckoutQuery,
     AnswerShippingQuery,
     AnswerWebAppQuery,
+    AnswerWidgetQuery,
     CanBotSendMessage,
     CheckBotUsername,
     CreateBot,
@@ -88,6 +92,7 @@ class Bots(
     GetManagedBotAccessSettings,
     GetManagedBotToken,
     GetOwnedBots,
+    InviteUsersToBot,
     RefundStarPayment,
     ReplaceManagedBotToken,
     RequestCallbackAnswer,
@@ -102,6 +107,7 @@ class Bots(
     SetBotName,
     SetChatMenuButton,
     SetGameScore,
-    SetManagedBotAccessSettings
+    SetManagedBotAccessSettings,
+    SetMySettings
 ):
     pass
